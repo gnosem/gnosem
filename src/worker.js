@@ -51,7 +51,37 @@ const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, Mcp-Session-Id",
-  "Access-Control-Expose-Headers": "Mcp-Session-Id",
+  "Access-Control-Expose-Headers": "Mcp-Session-Id, X-RateLimit-Remaining, X-RateLimit-Reset, X-RateLimit-Limit",
+};
+
+// Security headers applied to every response via the top-level fetch wrapper.
+// - HSTS: force HTTPS for 2y, include subdomains, opt into browser preload lists
+// - X-Content-Type-Options nosniff: block MIME sniffing
+// - X-Frame-Options DENY: no iframe embedding (anti-clickjacking on /dashboard)
+// - Referrer-Policy strict-origin-when-cross-origin: strip path on cross-origin nav
+// - Permissions-Policy: deny intrusive browser APIs we don't use
+// - Cross-Origin-Resource-Policy cross-origin: allow /health, SVGs, /demo/* to be embedded
+const SECURITY_HEADERS = {
+  "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()",
+  "Cross-Origin-Resource-Policy": "cross-origin",
+};
+
+// Per-path max request-body size (bytes). Enforced before parse in the fetch wrapper for POST
+// routes; requests over the cap get 413 immediately. Prevents an attacker from pushing a huge
+// payload through an unauthenticated endpoint to burn CPU on parse.
+const MAX_BODY_BYTES = {
+  "/signup": 4 * 1024,
+  "/auth/request": 4 * 1024,
+  "/auth/verify": 4 * 1024,
+  "/auth/logout": 1 * 1024,
+  "/mcp": 256 * 1024,           // memory_write caps content at 8KB; batch write can be ~50 * 8KB
+  "/demo/search": 4 * 1024,
+  "/api/stripe/webhook": 64 * 1024,
+  "/keys/rotate": 1 * 1024,
 };
 
 // ------------- helpers -------------
@@ -139,19 +169,27 @@ async function checkRateLimit(env, key, limit, windowMs) {
   const now = Date.now();
   const windowFloor = now - windowMs;
   const row = await env.DB.prepare("SELECT count, window_start FROM rate_limits WHERE key = ?").bind(key).first();
+  const resetOf = (ws) => Math.ceil((ws + windowMs) / 1000);
   if (!row || row.window_start < windowFloor) {
-    // Fresh window (or first ever hit)
     await env.DB.prepare(
       "INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?) " +
       "ON CONFLICT(key) DO UPDATE SET count = 1, window_start = excluded.window_start"
     ).bind(key, now).run();
-    return { allowed: true, remaining: limit - 1 };
+    return { allowed: true, remaining: limit - 1, limit, reset: resetOf(now) };
   }
   if (row.count >= limit) {
-    return { allowed: false, retryAfter: Math.ceil((row.window_start + windowMs - now) / 1000) };
+    return { allowed: false, retryAfter: Math.ceil((row.window_start + windowMs - now) / 1000), remaining: 0, limit, reset: resetOf(row.window_start) };
   }
   await env.DB.prepare("UPDATE rate_limits SET count = count + 1 WHERE key = ?").bind(key).run();
-  return { allowed: true, remaining: limit - row.count - 1 };
+  return { allowed: true, remaining: limit - row.count - 1, limit, reset: resetOf(row.window_start) };
+}
+
+function rateLimitHeaders(rl) {
+  return {
+    "X-RateLimit-Limit": String(rl.limit),
+    "X-RateLimit-Remaining": String(Math.max(0, rl.remaining)),
+    "X-RateLimit-Reset": String(rl.reset),
+  };
 }
 
 // ------------- magic-link auth -------------
@@ -346,6 +384,21 @@ async function toolMemoryWrite(env, ctx, args) {
   const sessionId = args?.session_id ? String(args.session_id).slice(0, 80) : null;
   const noOptimize = args?.no_optimize === true;
 
+  // Content-hash dedup (Item 5): SHA-256 of trim(content). Cheap check first —
+  // if we already have a byte-identical active memory for this user, short-circuit
+  // BEFORE any AI work. Complementary to semantic dedup: hash catches BYTE-identical
+  // writes for free; semantic catches paraphrases at cost of one embed + one Vectorize
+  // query. force:true bypasses both.
+  const contentHash = await sha256Hex(content);
+  if (!force) {
+    const hashHit = await env.DB.prepare(
+      "SELECT id, created_at FROM memories WHERE user_id = ? AND content_hash = ? AND forgotten_at IS NULL AND superseded_by IS NULL LIMIT 1"
+    ).bind(userId, contentHash).first();
+    if (hashHit) {
+      return { id: hashHit.id, created_at: hashHit.created_at, exact_duplicate: true };
+    }
+  }
+
   // Free-tier limit: 200 active memories (forgotten + superseded excluded).
   // Checked before the expensive AI calls so we fail fast when limits apply.
   if (ctx.plan === "free") {
@@ -394,8 +447,8 @@ async function toolMemoryWrite(env, ctx, args) {
   const optimized = opt?.optimized || null;
   const optimizedBytes = optimized ? new TextEncoder().encode(optimized).length : null;
   await env.DB.prepare(
-    "INSERT INTO memories (id, user_id, content, tags, written_by, session_id, created_at, content_optimized, content_bytes, optimized_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).bind(id, userId, content, JSON.stringify(tags), writtenBy, sessionId, now, optimized, contentBytes, optimizedBytes).run();
+    "INSERT INTO memories (id, user_id, content, tags, written_by, session_id, created_at, content_optimized, content_bytes, optimized_bytes, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).bind(id, userId, content, JSON.stringify(tags), writtenBy, sessionId, now, optimized, contentBytes, optimizedBytes, contentHash).run();
   await env.VECTORIZE.upsert([{
     id,
     values: vector,
@@ -647,9 +700,9 @@ async function toolMemoryWriteBulk(env, ctx, args) {
     freeRemaining = Math.max(0, FREE_TIER_MEMORY_LIMIT - existing);
   }
 
-  // Phase 1: validate + normalize each entry. Invalid entries fail fast with an
-  // error string in results[i]; valid ones queue up for AI processing.
-  const prepped = memories.map((m, i) => {
+  // Phase 1: validate + normalize each entry + hash content. Invalid entries fail
+  // fast with an error string in results[i]; valid ones queue up.
+  const prepped = await Promise.all(memories.map(async (m, i) => {
     try {
       const content = String(m?.content || "").trim();
       if (!content) throw new Error("content is required");
@@ -659,16 +712,55 @@ async function toolMemoryWriteBulk(env, ctx, args) {
       const sessionId = m?.session_id ? String(m.session_id).slice(0, 80) : null;
       const noOptimize = m?.no_optimize === true;
       const force = m?.force === true;
-      return { i, content, tags, writtenBy, sessionId, noOptimize, force };
+      const contentHash = await sha256Hex(content);
+      return { i, content, tags, writtenBy, sessionId, noOptimize, force, contentHash };
     } catch (e) {
       results[i] = { error: e.message || String(e) };
       return null;
     }
-  }).filter(Boolean);
+  }));
+  const valid = prepped.filter(Boolean);
 
-  // Phase 2: run embed + optimize for every valid entry in parallel.
+  // Phase 2a: content-hash dedup — cheap SELECT per hash (before spending AI credits).
+  // Entries whose hash already has an active row short-circuit with exact_duplicate:true.
+  // Also dedup WITHIN the batch: if two entries have identical hashes, only the first
+  // proceeds; the rest are back-filled in Phase 3 once the first's id is minted.
+  const seenInBatch = new Map(); // content_hash -> { id, created_at } once resolved
+  const pendingIndicesByHash = new Map(); // content_hash -> [result-slot i] awaiting Phase 3 id
+  const stillPending = [];
+  for (const p of valid) {
+    if (p.force) { stillPending.push(p); continue; }
+    // Batch-local dedup: dupe of an entry already resolved or reserved earlier.
+    if (seenInBatch.has(p.contentHash) || pendingIndicesByHash.has(p.contentHash)) {
+      const first = seenInBatch.get(p.contentHash);
+      if (first) {
+        results[p.i] = { id: first.id, created_at: first.created_at, exact_duplicate: true };
+      } else {
+        // The earlier duplicate hasn't been assigned an id yet; queue this slot to be
+        // back-filled once Phase 3 mints the id. We still mark exact_duplicate now so
+        // any error path that skips backfill still returns something sane.
+        results[p.i] = { exact_duplicate: true };
+        pendingIndicesByHash.get(p.contentHash).push(p.i);
+      }
+      continue;
+    }
+    // Now check the DB.
+    const hashHit = await env.DB.prepare(
+      "SELECT id, created_at FROM memories WHERE user_id = ? AND content_hash = ? AND forgotten_at IS NULL AND superseded_by IS NULL LIMIT 1"
+    ).bind(userId, p.contentHash).first();
+    if (hashHit) {
+      results[p.i] = { id: hashHit.id, created_at: hashHit.created_at, exact_duplicate: true };
+      seenInBatch.set(p.contentHash, { id: hashHit.id, created_at: hashHit.created_at });
+      continue;
+    }
+    stillPending.push(p);
+    // Reserve this hash so identical entries later in the batch queue up for back-fill.
+    pendingIndicesByHash.set(p.contentHash, []);
+  }
+
+  // Phase 2b: embed + optimize for the surviving entries in parallel.
   // Promise.allSettled so one failure doesn't abort the batch.
-  const aiOutcomes = await Promise.allSettled(prepped.map(async p => {
+  const aiOutcomes = await Promise.allSettled(stillPending.map(async p => {
     const [vector, opt] = await Promise.all([
       embed(env, p.content),
       p.noOptimize ? Promise.resolve(null) : optimizeContent(env, p.content),
@@ -676,16 +768,12 @@ async function toolMemoryWriteBulk(env, ctx, args) {
     return { ...p, vector, opt };
   }));
 
-  // Phase 3: for each entry, run dedup lookup (skipped if force=true).
-  // We do this serially per-entry to avoid double-writing entries that dedup
-  // against each other WITHIN the batch (Vectorize would need seconds to propagate).
-  // In practice dedup within a batch is rare; the primary win is preventing dups
-  // against pre-existing memories.
+  // Phase 3: semantic dedup + free-tier gating + INSERT queueing.
   const toInsertStmts = [];
   const vectorizeUpserts = [];
   for (let idx = 0; idx < aiOutcomes.length; idx++) {
     const o = aiOutcomes[idx];
-    const p = prepped[idx];
+    const p = stillPending[idx];
     if (o.status !== "fulfilled") {
       results[p.i] = { error: (o.reason && o.reason.message) || "embed/optimize failed" };
       continue;
@@ -722,16 +810,26 @@ async function toolMemoryWriteBulk(env, ctx, args) {
     const optimizedBytes = optimized ? new TextEncoder().encode(optimized).length : null;
     toInsertStmts.push(
       env.DB.prepare(
-        "INSERT INTO memories (id, user_id, content, tags, written_by, session_id, created_at, content_optimized, content_bytes, optimized_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).bind(id, userId, p.content, JSON.stringify(p.tags), p.writtenBy, p.sessionId, now, optimized, contentBytes, optimizedBytes)
+        "INSERT INTO memories (id, user_id, content, tags, written_by, session_id, created_at, content_optimized, content_bytes, optimized_bytes, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).bind(id, userId, p.content, JSON.stringify(p.tags), p.writtenBy, p.sessionId, now, optimized, contentBytes, optimizedBytes, p.contentHash)
     );
     vectorizeUpserts.push({ id, values: vector, metadata: { user_id: userId, created_at: now } });
-    results[p.i] = {
+    const row = {
       id,
       created_at: now,
       optimized: optimized !== null,
       ...(optimized ? { compression_ratio: Number((optimizedBytes / contentBytes).toFixed(3)) } : {}),
     };
+    results[p.i] = row;
+    // Backfill any earlier-batch entries whose hash matched but were waiting for our id.
+    const waiters = pendingIndicesByHash.get(p.contentHash);
+    if (waiters && waiters.length) {
+      for (const wi of waiters) {
+        results[wi] = { id, created_at: now, exact_duplicate: true };
+      }
+      pendingIndicesByHash.set(p.contentHash, []);
+    }
+    seenInBatch.set(p.contentHash, { id, created_at: now });
   }
 
   // Phase 4: commit all inserts as a single D1 batch + one Vectorize upsert.
@@ -785,7 +883,7 @@ function safeParse(s) {
 const TOOLS = [
   {
     name: "memory_write",
-    description: "Save a fact, preference, decision, or note to the user's cross-model memory. Any MCP client can read this back later. Include written_by (e.g. 'claude-code', 'gpt-5', 'kimi-k2') for provenance and session_id to group related writes. Long content (>400 chars) is automatically compressed on write to a structured-facts form optimized for LLM reading — the raw text is preserved. Pass no_optimize:true to skip. Writes are semantically deduped by default: if the new content paraphrases an existing memory (cosine ≥ 0.85), the existing id is returned with deduped:true instead of writing a near-duplicate. Pass force:true to bypass dedup, or use memory_supersede to explicitly correct a prior memory.",
+    description: "Save a fact, preference, decision, or note to the user's cross-model memory. Any MCP client can read this back later. Include written_by (e.g. 'claude-code', 'gpt-5', 'kimi-k2') for provenance and session_id to group related writes. Long content (>400 chars) is automatically compressed on write to a structured-facts form optimized for LLM reading — the raw text is preserved. Pass no_optimize:true to skip. Writes are deduped by default: (1) SHA-256 of trim(content) short-circuits byte-identical writes with { id, exact_duplicate:true } for free (no embed call); (2) failing that, semantic dedup returns { id, deduped:true, matched_score } when cosine ≥ 0.85. Pass force:true to bypass both, or use memory_supersede to explicitly correct a prior memory.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1409,9 +1507,28 @@ ${LOCKUP_SVG.replace('<svg ', '<svg class="lockup" ')}
 
 export default {
   async fetch(request, env) {
+    const response = await route(request, env);
+    // Apply security headers to every response. Set (not append) so a route can override
+    // if it genuinely needs to — but nothing in the codebase should need to right now.
+    for (const [k, v] of Object.entries(SECURITY_HEADERS)) response.headers.set(k, v);
+    return response;
+  },
+};
+
+// Extracted routing so the fetch wrapper stays focused on header application.
+async function route(request, env) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS });
+    }
+
+    // Enforce max-body-size for POST endpoints BEFORE any parsing / expensive work.
+    // Content-Length is set by every legitimate HTTP client; missing = suspicious, reject.
+    if (request.method === "POST" && MAX_BODY_BYTES[url.pathname] !== undefined) {
+      const contentLength = Number(request.headers.get("content-length"));
+      const max = MAX_BODY_BYTES[url.pathname];
+      if (!Number.isFinite(contentLength)) return json({ error: "Content-Length header required" }, 411);
+      if (contentLength > max) return json({ error: `request body too large (${contentLength} bytes; max ${max})` }, 413);
     }
 
     // Landing page — short cache so branding/copy updates propagate within ~5 min.
@@ -1562,8 +1679,11 @@ Sitemap: https://gnosem.dev/sitemap.xml
     if (url.pathname === "/signup" && request.method === "POST") {
       const ip = request.headers.get("cf-connecting-ip") || "unknown";
       const rl = await checkRateLimit(env, "signup:" + ip, 5, 3600 * 1000);
-      if (!rl.allowed) return json({ error: "too many signups from this address; try again in ~" + Math.ceil(rl.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rl.retryAfter) });
-      return handleSignup(request, env);
+      if (!rl.allowed) return json({ error: "too many signups from this address; try again in ~" + Math.ceil(rl.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rl.retryAfter), ...rateLimitHeaders(rl) });
+      const resp = await handleSignup(request, env);
+      // Attach rate-limit headers to successful signups too (client backoff visibility).
+      for (const [k, v] of Object.entries(rateLimitHeaders(rl))) resp.headers.set(k, v);
+      return resp;
     }
 
     // Public read-only demo store. Endpoints hard-code the demo user_id server-side.
@@ -1579,7 +1699,7 @@ Sitemap: https://gnosem.dev/sitemap.xml
     if (url.pathname === "/auth/request" && request.method === "POST") {
       const ip = request.headers.get("cf-connecting-ip") || "unknown";
       const rl = await checkRateLimit(env, "auth:" + ip, 10, 900 * 1000);
-      if (!rl.allowed) return json({ error: "too many sign-in requests from this address; try again in ~" + Math.ceil(rl.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rl.retryAfter) });
+      if (!rl.allowed) return json({ error: "too many sign-in requests from this address; try again in ~" + Math.ceil(rl.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rl.retryAfter), ...rateLimitHeaders(rl) });
       if (!env.MAGIC_LINK_SECRET) return json({ error: "email login not configured on this deployment" }, 503);
       let body; try { body = await request.json(); } catch { body = {}; }
       const email = String(body.email || "").trim().toLowerCase().slice(0, 254);
@@ -1720,5 +1840,4 @@ Sitemap: https://gnosem.dev/sitemap.xml
     }
 
     return json({ error: "not found" }, 404);
-  },
-};
+}
