@@ -1,24 +1,28 @@
-// Gnosem brand assets — inline SVG served by the worker.
-// Palette matches CueTV: ink #0F172A, gold #B08D3E, cream #F5F1EA.
-// Design principle: type-forward, minimal, one distinctive mark. No stock icons, no gradients, no clip-art.
-//
-// The "mark" is a circle bisected by a horizontal line: the sphere of knowledge (gnosis) crossed by the
-// line of shared memory that runs through every model. It reads clean at 16px and holds up at 512px.
+// Gnosem brand assets — direction 2B "Seal".
+// Palette: ink #15140F, paper #FAF9F7, terracotta #A2603F.
+// Type: Newsreader (wordmark, uppercase, letter-spacing ≈0.22em). Falls back to Georgia if not loaded.
+// Master files live in brand/ and are the visual reference; these constants are what the Worker actually serves.
+// Rules in brand/README.md — do not restyle without updating both.
 
-export const MARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Gnosem mark"><circle cx="32" cy="32" r="26" fill="none" stroke="#0F172A" stroke-width="4"/><line x1="6" y1="32" x2="58" y2="32" stroke="#B08D3E" stroke-width="4" stroke-linecap="round"/><circle cx="32" cy="32" r="4" fill="#0F172A"/></svg>`;
+export const MARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="#A2603F" role="img" aria-label="Gnosem mark"><circle cx="50" cy="50" r="34" stroke-width="10"/><line x1="50" y1="50" x2="71" y2="29" stroke-width="10"/></svg>`;
 
-export const MARK_INVERSE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Gnosem mark"><circle cx="32" cy="32" r="26" fill="none" stroke="#F5F1EA" stroke-width="4"/><line x1="6" y1="32" x2="58" y2="32" stroke="#B08D3E" stroke-width="4" stroke-linecap="round"/><circle cx="32" cy="32" r="4" fill="#F5F1EA"/></svg>`;
+export const MARK_INK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="#15140F" role="img" aria-label="Gnosem mark"><circle cx="50" cy="50" r="34" stroke-width="10"/><line x1="50" y1="50" x2="71" y2="29" stroke-width="10"/></svg>`;
 
-// Wordmark — "gnosem" set in Georgia, lowercase, with the "o" replaced by the bisected-circle mark inline.
-// The letters gn_sem sit at cap height; the mark drops into the o-slot. Reads immediately at 200px+.
-export const WORDMARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" role="img" aria-label="gnosem"><style>.t{font-family:Georgia,'Times New Roman',serif;font-size:80px;fill:#0F172A;letter-spacing:-.02em}</style><text x="0" y="76" class="t">gn</text><g transform="translate(90,20)"><circle cx="28" cy="28" r="24" fill="none" stroke="#0F172A" stroke-width="3.5"/><line x1="4" y1="28" x2="52" y2="28" stroke="#B08D3E" stroke-width="3.5" stroke-linecap="round"/><circle cx="28" cy="28" r="3.5" fill="#0F172A"/></g><text x="150" y="76" class="t">sem</text></svg>`;
+export const MARK_INVERSE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="#FAF9F7" role="img" aria-label="Gnosem mark"><circle cx="50" cy="50" r="34" stroke-width="10"/><line x1="50" y1="50" x2="71" y2="29" stroke-width="10"/></svg>`;
 
-// Full lockup — mark left + wordmark right, for header use.
-export const LOCKUP_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 96" role="img" aria-label="Gnosem"><g transform="translate(0,16)"><circle cx="32" cy="32" r="26" fill="none" stroke="#0F172A" stroke-width="4"/><line x1="6" y1="32" x2="58" y2="32" stroke="#B08D3E" stroke-width="4" stroke-linecap="round"/><circle cx="32" cy="32" r="4" fill="#0F172A"/></g><text x="80" y="76" font-family="Georgia,'Times New Roman',serif" font-size="80" fill="#0F172A" letter-spacing="-.02em">gnosem</text></svg>`;
+export const LOCKUP_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100" fill="none" role="img" aria-label="Gnosem"><g stroke="#15140F"><circle cx="50" cy="50" r="34" stroke-width="10"/><line x1="50" y1="50" x2="71" y2="29" stroke-width="10"/></g><text x="112" y="66" fill="#15140F" font-family="Newsreader, Georgia, serif" font-size="44" letter-spacing="9.7">GNOSEM</text></svg>`;
 
-// Favicon — the mark, dense enough to survive downscaling to 16px.
-export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#F5F1EA"/><circle cx="16" cy="16" r="12" fill="none" stroke="#0F172A" stroke-width="2.5"/><line x1="3" y1="16" x2="29" y2="16" stroke="#B08D3E" stroke-width="2.5" stroke-linecap="round"/><circle cx="16" cy="16" r="2.5" fill="#0F172A"/></svg>`;
+export const LOCKUP_INVERSE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100" fill="none" role="img" aria-label="Gnosem"><g stroke="#FAF9F7"><circle cx="50" cy="50" r="34" stroke-width="10"/><line x1="50" y1="50" x2="71" y2="29" stroke-width="10"/></g><text x="112" y="66" fill="#FAF9F7" font-family="Newsreader, Georgia, serif" font-size="44" letter-spacing="9.7">GNOSEM</text></svg>`;
 
-// OG image — 1200x630. Cream background, centered lockup + tagline, small footer attribution.
-// SVG OG images render in Slack/Twitter/LinkedIn/Discord previews.
-export const OG_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630"><rect width="1200" height="630" fill="#F5F1EA"/><g transform="translate(390,220)"><circle cx="50" cy="50" r="42" fill="none" stroke="#0F172A" stroke-width="6"/><line x1="8" y1="50" x2="92" y2="50" stroke="#B08D3E" stroke-width="6" stroke-linecap="round"/><circle cx="50" cy="50" r="6" fill="#0F172A"/></g><text x="510" y="298" font-family="Georgia,'Times New Roman',serif" font-size="130" fill="#0F172A" letter-spacing="-.02em">gnosem</text><text x="600" y="380" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-size="34" fill="#0F172A" font-style="italic">one memory. every model.</text><text x="600" y="450" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif" font-size="20" fill="#0F172A" opacity=".7">Cross-vendor AI memory over MCP</text><text x="600" y="580" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif" font-size="16" fill="#0F172A" opacity=".55" letter-spacing=".15em">GNOSEM.DEV  ·  A CUETV LLC PRODUCT</text></svg>`;
+// Favicon — terracotta tile, mark drawn in paper, scaled 78% for clear space per brand rules.
+export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#A2603F"/><g fill="none" stroke="#FAF9F7" transform="translate(50 50) scale(0.78) translate(-50 -50)"><circle cx="50" cy="50" r="33" stroke-width="12"/><line x1="50" y1="50" x2="67" y2="33" stroke-width="12"/></g></svg>`;
+
+export const FAVICON_INK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#15140F"/><g fill="none" stroke="#FAF9F7" transform="translate(50 50) scale(0.78) translate(-50 -50)"><circle cx="50" cy="50" r="33" stroke-width="12"/><line x1="50" y1="50" x2="67" y2="33" stroke-width="12"/></g></svg>`;
+
+// OG social preview image (1200×630). Paper background, mark + wordmark + italic tagline, tracked footer.
+// Newsreader referenced by name; social crawlers see the Georgia fallback which is acceptable.
+export const OG_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630"><rect width="1200" height="630" fill="#FAF9F7"/><g fill="none" stroke="#A2603F" transform="translate(438,180)"><circle cx="60" cy="60" r="52" stroke-width="14"/><line x1="60" y1="60" x2="92" y2="28" stroke-width="14"/></g><text x="580" y="270" fill="#15140F" font-family="Newsreader, Georgia, serif" font-size="120" letter-spacing="26.4" font-weight="500">GNOSEM</text><text x="600" y="360" text-anchor="middle" fill="#15140F" font-family="Newsreader, Georgia, serif" font-size="34" font-style="italic" opacity=".82">One memory. Every model.</text><text x="600" y="430" text-anchor="middle" fill="#15140F" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif" font-size="20" opacity=".62">Cross-vendor AI memory over MCP</text><text x="600" y="580" text-anchor="middle" fill="#15140F" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif" font-size="14" opacity=".5" letter-spacing="3.36">GNOSEM.DEV  ·  A CUETV LLC PRODUCT</text></svg>`;
+
+// Web font link — inline into any HTML that renders the lockup so the wordmark uses Newsreader.
+// If the browser can't fetch Google Fonts, the SVG font-family fallback chain (Georgia, serif) kicks in.
+export const NEWSREADER_LINK = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">`;

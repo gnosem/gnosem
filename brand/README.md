@@ -1,68 +1,44 @@
-# Gnosem brand
+# Gnosem brand assets (direction 2B — "Seal")
 
-Master SVG assets. All shipped versions on gnosem.dev are generated from the same source in `src/brand.js` (kept in sync — the SVGs here are the authoritative visual reference).
+Closed ring + contained gnomon. Classical, coin-like, holds down to 16px.
 
-## Palette
+## Files
+| file | use |
+| --- | --- |
+| gnosem-mark.svg | primary mark, terracotta on light |
+| gnosem-mark-ink.svg | mark in ink, single-colour light backgrounds |
+| gnosem-mark-inverse.svg | mark on dark backgrounds |
+| gnosem-lockup.svg | mark + wordmark, light background |
+| gnosem-lockup-inverse.svg | mark + wordmark, dark background |
+| favicon.svg | 16–64px app/tab icon, terracotta tile |
+| favicon-ink.svg | favicon on ink tile |
 
-| Token | Value | Use |
-|---|---|---|
-| Ink | `#0F172A` | Text, outlines, on light backgrounds |
-| Cream | `#F5F1EA` | Backgrounds, inverse text |
-| Gold | `#B08D3E` | Accent line through the mark — the "shared memory" gesture |
+## Colours
+- ink `#15140F`
+- paper `#FAF9F7`
+- terracotta `#A2603F`
 
-Never introduce a fourth color. If the mark needs to sit on a color other than cream or ink, use the transparent-background inverse and let the surface show through.
+## Type
+Wordmark is Newsreader, uppercase, 0.22em tracking. The lockup SVGs reference the
+font by name — convert the `<text>` to outlines before shipping anywhere the font
+isn't loaded (`npx svgo` won't do this; use a vector editor or `text-to-path`).
 
-## Assets in this folder
+## Rules
+- Clear space on all sides = radius of the ring.
+- Never rotate the gnomon hand; the 1:30 angle is fixed.
+- Never place the ring mark on a mid-tone; use the inverse or ink version.
+- Below 20px use `favicon.svg` (thinner stroke), not the primary mark.
 
-| File | Ratio | Use |
-|---|---|---|
-| [`mark.svg`](./mark.svg) | 1:1 | The mark alone on light backgrounds |
-| [`mark-inverse.svg`](./mark-inverse.svg) | 1:1 | The mark alone on dark backgrounds |
-| [`wordmark.svg`](./wordmark.svg) | 3.75:1 | The word "gnosem" (the "o" is the mark) |
-| [`lockup-light.svg`](./lockup-light.svg) | 4.58:1 | Mark + wordmark, on light |
-| [`lockup-dark.svg`](./lockup-dark.svg) | 4.58:1 | Mark + wordmark, on dark |
-| [`favicon.svg`](./favicon.svg) | 1:1 | Cream-square favicon, renders at 16–32 px |
-| [`og.svg`](./og.svg) | 1200×630 | OG/social preview card |
+## HTML
+```html
+<link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
+<img src="/brand/gnosem-lockup.svg" alt="Gnosem" height="32">
+```
 
-## Clear space
-
-Reserve clear space equal to **the height of the mark's center dot** on every side.
-
-- For the mark alone (64px viewBox): center dot has radius 4px, so keep ≥ 8px around the artwork.
-- For the lockup: same rule, applied to the whole bounding box.
-
-Never place other logos, text, or graphics inside the clear space. Never let the mark touch a page edge.
-
-## Small sizes
-
-- **Mark:** never smaller than **20 px** wide. Below that the center dot fuses with the stroke and reads as an unbroken ring.
-- **Wordmark / lockup:** never smaller than **120 px** wide. The Georgia serif detail collapses below that; if you need something smaller, use the mark alone.
-- **Favicon:** already tuned for 16–32 px. Use `favicon.svg` (not a scaled-down mark) at those sizes.
-
-## Do / don't
-
-**Do**
-- Use SVG wherever possible — it stays crisp at any DPI.
-- Use `lockup-dark.svg` (or `mark-inverse.svg`) on any surface darker than `#7a7568`.
-- Keep the gold line horizontal and full-width. It's the load-bearing gesture of the brand.
-
-**Don't**
-- Don't recolor the mark. Ink + cream + gold, nothing else.
-- Don't tilt, skew, add shadows, or "3-D" it.
-- Don't set the wordmark in a font other than Georgia. The serif is deliberate — it's what keeps the mark from reading as a corporate startup logo.
-- Don't animate on load. The mark is meant to feel like a printer's mark, not a splash screen.
-- Don't crop the mark to just the horizontal line — the line is context-dependent on the circle.
-
-## Where the assets are served
-
-All SVGs above are also served at stable URLs from the Gnosem Worker:
-
-| URL | File |
-|---|---|
-| `https://gnosem.dev/mark.svg` | mark.svg |
-| `https://gnosem.dev/wordmark.svg` | wordmark.svg |
-| `https://gnosem.dev/logo.svg` | lockup-light.svg (default) |
-| `https://gnosem.dev/favicon.svg` | favicon.svg |
-| `https://gnosem.dev/og.svg` | og.svg |
-
-Source of truth for what actually ships is `src/brand.js`. This folder is the visual reference.
+## README badge / dark-mode pair
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/gnosem-lockup-inverse.svg">
+  <img src="brand/gnosem-lockup.svg" alt="Gnosem" height="40">
+</picture>
+```

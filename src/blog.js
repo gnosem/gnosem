@@ -3,29 +3,30 @@
 // Shares the landing page's typography (Georgia + system sans, ink #0F172A on cream #F5F1EA).
 
 const SHARED_CSS = `
-body{font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;max-width:720px;margin:40px auto;padding:0 20px;color:#0F172A;background:#F5F1EA}
-h1{font-family:Georgia,serif;font-size:36px;line-height:1.18;margin:0 0 12px;letter-spacing:-.015em}
-h2{font-family:Georgia,serif;font-size:22px;font-weight:600;margin:36px 0 10px;letter-spacing:-.005em}
-h3{font-family:Georgia,serif;font-size:18px;font-weight:600;margin:28px 0 8px}
+:root{--ink:#15140F;--paper:#FAF9F7;--terracotta:#A2603F;--ink-soft:#3a3833;--rule:rgba(21,20,15,.14)}
+body{font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;max-width:720px;margin:44px auto;padding:0 20px;color:var(--ink);background:var(--paper)}
+h1{font-family:"Newsreader",Georgia,serif;font-size:36px;line-height:1.18;margin:0 0 12px;letter-spacing:-.015em;font-weight:500}
+h2{font-family:"Newsreader",Georgia,serif;font-size:22px;font-weight:600;margin:36px 0 10px;letter-spacing:-.005em}
+h3{font-family:"Newsreader",Georgia,serif;font-size:18px;font-weight:600;margin:28px 0 8px}
 p{margin:0 0 16px}
 ul,ol{margin:0 0 16px 22px;padding:0}
 li{margin:0 0 6px}
-a{color:#7a2e2e}
+a{color:var(--terracotta)}
 a:hover{text-decoration:underline}
-code{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13.5px;background:#eae4d6;padding:1px 5px;border-radius:2px}
-pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;background:#0F172A;color:#F5F1EA;padding:14px 16px;border-radius:4px;overflow-x:auto;margin:0 0 18px;line-height:1.5}
+code{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13.5px;background:#ece5d7;padding:1px 5px;border-radius:2px}
+pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;background:var(--ink);color:var(--paper);padding:14px 16px;border-radius:4px;overflow-x:auto;margin:0 0 18px;line-height:1.5}
 pre code{background:none;padding:0;color:inherit;font-size:inherit}
-blockquote{border-left:3px solid #B08D3E;margin:0 0 16px;padding:2px 0 2px 14px;color:#3a3833;font-style:italic}
-hr{border:none;border-top:1px solid rgba(35,32,27,.14);margin:32px 0}
-.tag{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.1em;background:#0F172A;color:#F5F1EA;padding:3px 10px;border-radius:2px;margin-bottom:14px}
+blockquote{border-left:3px solid var(--terracotta);margin:0 0 16px;padding:2px 0 2px 14px;color:var(--ink-soft);font-style:italic}
+hr{border:none;border-top:1px solid var(--rule);margin:32px 0}
+.tag{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.14em;background:var(--ink);color:var(--paper);padding:3px 10px;border-radius:2px;margin-bottom:14px}
 .meta{font-size:13px;color:#5b564d;margin:0 0 28px;letter-spacing:.02em}
 .meta a{color:#5b564d}
-.mast{display:flex;align-items:center;gap:10px;margin-bottom:24px;text-decoration:none;color:#0F172A}
+.mast{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:var(--ink)}
 .mast img{width:32px;height:32px}
-.mast .n{font-family:Georgia,serif;font-size:18px;font-weight:600}
-.cta{display:inline-block;font-weight:700;font-size:14px;background:#0F172A;color:#F5F1EA;padding:10px 18px;border-radius:3px;text-decoration:none;margin:16px 0}
-a.cta{color:#F5F1EA}
-.footer{margin-top:48px;padding-top:20px;border-top:1px solid rgba(35,32,27,.14);font-size:13px;color:#5b564d}
+.mast .n{font-family:"Newsreader",Georgia,serif;font-size:20px;font-weight:600;letter-spacing:.14em}
+.cta{display:inline-block;font-weight:700;font-size:14px;background:var(--ink);color:var(--paper);padding:10px 18px;border-radius:3px;text-decoration:none;margin:16px 0}
+a.cta{color:var(--paper)}
+.footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--rule);font-size:13px;color:#5b564d}
 `;
 
 export const POSTS = [
@@ -236,11 +237,14 @@ ${isArticle ? `<meta property="article:published_time" content="${published}T00:
 <meta property="article:author" content="CUETV LLC">
 ${(articleTags || []).map(t => `<meta property="article:tag" content="${t}">`).join("\n")}` : ""}
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="apple-touch-icon" href="/favicon.svg">`;
+<link rel="apple-touch-icon" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">`;
 }
 
 function masthead() {
-  return `<a class="mast" href="/"><img src="/mark.svg" alt=""><span class="n">gnosem</span></a>`;
+  return `<a class="mast" href="/"><img src="/mark.svg" alt=""><span class="n">GNOSEM</span></a>`;
 }
 
 function footer() {

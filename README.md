@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gnosem/gnosem/main/brand/lockup-dark.svg">
-    <img alt="Gnosem" src="https://raw.githubusercontent.com/gnosem/gnosem/main/brand/lockup-light.svg" width="360">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gnosem/gnosem/main/brand/gnosem-lockup-inverse.svg">
+    <img alt="Gnosem" src="https://raw.githubusercontent.com/gnosem/gnosem/main/brand/gnosem-lockup.svg" width="360">
   </picture>
 </p>
 

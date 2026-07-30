@@ -30,7 +30,7 @@
  */
 
 import { LLMS_TXT } from "./llms-txt.js";
-import { MARK_SVG, WORDMARK_SVG, LOCKUP_SVG, FAVICON_SVG, OG_SVG } from "./brand.js";
+import { MARK_SVG, MARK_INK_SVG, MARK_INVERSE_SVG, LOCKUP_SVG, LOCKUP_INVERSE_SVG, FAVICON_SVG, FAVICON_INK_SVG, OG_SVG, NEWSREADER_LINK } from "./brand.js";
 import { POSTS, blogIndexHtml, blogPostHtml } from "./blog.js";
 
 const EMBED_MODEL = "@cf/baai/bge-base-en-v1.5";
@@ -459,30 +459,34 @@ function upgradeHtml(ctx) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Upgrade to Gnosem Pro</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<style>body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;max-width:640px;margin:40px auto;padding:0 20px;color:#0F172A;background:#F5F1EA}
-.mast{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:#0F172A}
+${NEWSREADER_LINK}
+<style>:root{--ink:#15140F;--paper:#FAF9F7;--terracotta:#A2603F;--ink-soft:#3a3833}
+body{font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;max-width:640px;margin:44px auto;padding:0 20px;color:var(--ink);background:var(--paper)}
+.mast{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:var(--ink)}
 .mast img{width:32px;height:32px}
-.mast .n{font-family:Georgia,serif;font-size:18px;font-weight:600}
-h1{font-size:26px;margin:0 0 4px;font-family:Georgia,serif}
-.plan{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.12em;background:#0F172A;color:#F5F1EA;padding:3px 10px;border-radius:2px;margin-bottom:20px}
+.mast .n{font-family:"Newsreader",Georgia,serif;font-size:20px;font-weight:600;letter-spacing:.14em}
+h1{font-size:30px;margin:0 0 4px;font-family:"Newsreader",Georgia,serif;font-weight:500;letter-spacing:-.01em}
+.plan{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.14em;background:var(--ink);color:var(--paper);padding:3px 10px;border-radius:2px;margin-bottom:20px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:22px 0}
 @media(max-width:520px){.grid{grid-template-columns:1fr}}
-.card{background:#fff;border:1.5px solid #0F172A;border-radius:6px;padding:24px 22px;text-decoration:none;color:inherit;display:block;transition:transform .1s}
-.card:hover{transform:translateY(-2px);box-shadow:0 4px 0 #0F172A}
-.card.highlight{background:#0F172A;color:#F5F1EA;position:relative}
-.badge{position:absolute;top:-9px;right:14px;background:#B08D3E;color:#0F172A;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:2px 8px;border-radius:2px}
-.card h3{font-family:Georgia,serif;font-size:22px;margin-bottom:6px;font-weight:600}
+.card{background:#fff;border:1.5px solid var(--ink);border-radius:6px;padding:24px 22px;text-decoration:none;color:inherit;display:block;transition:transform .1s}
+.card:hover{transform:translateY(-2px);box-shadow:0 4px 0 var(--ink)}
+.card.highlight{background:var(--ink);color:var(--paper);position:relative}
+.badge{position:absolute;top:-9px;right:14px;background:var(--terracotta);color:var(--paper);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:2px 8px;border-radius:2px}
+.card h3{font-family:"Newsreader",Georgia,serif;font-size:22px;margin-bottom:6px;font-weight:600}
 .card .price{font-size:32px;font-weight:600;font-variant-numeric:tabular-nums;margin:8px 0 4px}
 .card .price .per{font-size:13px;font-weight:400;opacity:.7;margin-left:4px}
-.card .save{font-size:12.5px;color:#B08D3E;font-weight:600;letter-spacing:.02em;margin-top:2px}
+.card .save{font-size:12.5px;color:var(--terracotta);font-weight:600;letter-spacing:.02em;margin-top:2px}
+.card.highlight .save{color:#D9A579}
 .card ul{list-style:none;padding:0;margin:14px 0 0;font-size:14px}
 .card li{padding:4px 0;padding-left:18px;position:relative}
-.card li::before{content:"✓";position:absolute;left:0;color:#B08D3E;font-weight:700}
-.card.highlight li::before{color:#D9B96A}
-.free{padding:14px 18px;background:#fff;border-left:3px solid #B08D3E;font-size:14px;color:#555;margin-top:8px}
-.note{font-size:12.5px;color:#777;border-top:1px solid #ddd;margin-top:32px;padding-top:14px}
+.card li::before{content:"✓";position:absolute;left:0;color:var(--terracotta);font-weight:700}
+.card.highlight li::before{color:#D9A579}
+.free{padding:14px 18px;background:#fff;border-left:3px solid var(--terracotta);font-size:14px;color:var(--ink-soft);margin-top:8px}
+.note{font-size:12.5px;color:var(--ink-soft);border-top:1px solid rgba(21,20,15,.14);margin-top:32px;padding-top:14px}
+a{color:var(--terracotta)}
 </style></head><body>
-<a class="mast" href="/"><img src="/mark.svg" alt=""><span class="n">gnosem</span></a>
+<a class="mast" href="/"><img src="/gnosem-mark.svg" alt=""><span class="n">GNOSEM</span></a>
 <h1>Upgrade to Gnosem Pro</h1>
 <span class="plan">Current plan: ${planLabel}</span>
 <p>Unlimited cross-vendor memories across every model you use. Same MCP config, no data migration.</p>
@@ -572,19 +576,23 @@ async function handleUpgraded(request, env) {
     ]);
   }
   const keyLine = apiKey
-    ? `<div style="background:#fff;border:1.5px solid #0F172A;border-radius:4px;padding:14px 18px;margin:16px 0"><strong>Your new API key</strong> (save this — it will not be shown again):<pre style="background:#0F172A;color:#F5F1EA;padding:10px 14px;border-radius:3px;margin-top:8px;font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;overflow-x:auto">${apiKey}</pre></div>`
+    ? `<div style="background:#fff;border:1.5px solid #15140F;border-radius:4px;padding:14px 18px;margin:16px 0"><strong>Your new API key</strong> (save this — it will not be shown again):<pre style="background:#15140F;color:#FAF9F7;padding:10px 14px;border-radius:3px;margin-top:8px;font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;overflow-x:auto">${apiKey}</pre></div>`
     : `<p>Existing account upgraded. Your existing API key(s) now have Pro access.</p>`;
   return new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Welcome to Gnosem Pro</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<style>body{font:15px/1.6 -apple-system,BlinkMacSystemFont,Inter,sans-serif;max-width:640px;margin:40px auto;padding:0 20px;color:#0F172A;background:#F5F1EA}
-.mast{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:#0F172A}
+${NEWSREADER_LINK}
+<style>:root{--ink:#15140F;--paper:#FAF9F7;--terracotta:#A2603F;--ink-soft:#3a3833}
+body{font:16px/1.6 -apple-system,BlinkMacSystemFont,Inter,sans-serif;max-width:640px;margin:44px auto;padding:0 20px;color:var(--ink);background:var(--paper)}
+.mast{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:var(--ink)}
 .mast img{width:32px;height:32px}
-.mast .n{font-family:Georgia,serif;font-size:18px;font-weight:600}
-h1{font-family:Georgia,serif;font-size:28px;margin:0 0 8px}.tag{display:inline-block;background:#B08D3E;color:#0F172A;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:3px 10px;border-radius:2px;margin-bottom:16px}
-code{background:#eaeaea;padding:1px 5px;border-radius:2px;font-family:ui-monospace,SF Mono,Consolas,monospace}
-pre{background:#0F172A;color:#F5F1EA;padding:12px 14px;border-radius:3px;font-size:12.5px;overflow-x:auto}</style></head>
+.mast .n{font-family:"Newsreader",Georgia,serif;font-size:20px;font-weight:600;letter-spacing:.14em}
+h1{font-family:"Newsreader",Georgia,serif;font-size:30px;margin:0 0 8px;font-weight:500}
+.tag{display:inline-block;background:var(--terracotta);color:var(--paper);font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;padding:3px 10px;border-radius:2px;margin-bottom:16px}
+code{background:#ece5d7;padding:1px 5px;border-radius:2px;font-family:ui-monospace,SF Mono,Consolas,monospace}
+pre{background:var(--ink);color:var(--paper);padding:12px 14px;border-radius:3px;font-size:12.5px;overflow-x:auto}
+a{color:var(--terracotta)}</style></head>
 <body>
-<a class="mast" href="/"><img src="/mark.svg" alt=""><span class="n">gnosem</span></a>
+<a class="mast" href="/"><img src="/gnosem-mark.svg" alt=""><span class="n">GNOSEM</span></a>
 <span class="tag">Payment received</span>
 <h1>Welcome to Gnosem Pro</h1>
 <p>Subscription active through ${new Date(periodEnd).toLocaleDateString()}.</p>
@@ -664,6 +672,7 @@ function landingHtml() {
 <meta name="twitter:image" content="https://gnosem.dev/og.svg">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="apple-touch-icon" href="/favicon.svg">
+${NEWSREADER_LINK}
 <script type="application/ld+json">
 {"@context":"https://schema.org","@graph":[
 {"@type":"SoftwareApplication","@id":"https://gnosem.dev/#software","name":"Gnosem","url":"https://gnosem.dev/","applicationCategory":"DeveloperApplication","applicationSubCategory":"AI Infrastructure","operatingSystem":"Cloud","description":"Cross-vendor AI memory server over Model Context Protocol. One persistent memory store that reads/writes from any MCP-capable AI client — Claude Desktop, Cursor, Windsurf, Zed, ChatGPT (via Custom Action), Kimi, and more.","offers":[{"@type":"Offer","name":"Free","price":"0","priceCurrency":"USD","description":"200 memories, 1 API key, community support"},{"@type":"Offer","name":"Pro Monthly","price":"9","priceCurrency":"USD","description":"Unlimited memories, 1GB storage, unlimited API keys, priority indexing"},{"@type":"Offer","name":"Pro Annual","price":"90","priceCurrency":"USD","description":"Pro billed annually (2 months free)"}],"publisher":{"@type":"Organization","name":"CUETV LLC","url":"https://cuetv.us"}},
@@ -678,21 +687,33 @@ function landingHtml() {
 ]}]}
 </script>
 <style>
-body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;max-width:720px;margin:40px auto;padding:0 20px;color:#0F172A;background:#F5F1EA}
-h1{font-family:Georgia,serif;font-size:32px;margin:0 0 4px;letter-spacing:-.01em}
-h2{font-size:18px;margin:32px 0 8px;font-family:Georgia,serif;font-weight:600}
-.tag{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.1em;background:#0F172A;color:#F5F1EA;padding:3px 10px;border-radius:2px;margin-bottom:16px}
+:root{--ink:#15140F;--paper:#FAF9F7;--terracotta:#A2603F;--ink-soft:#3a3833}
+body{font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;max-width:720px;margin:44px auto;padding:0 20px;color:var(--ink);background:var(--paper)}
+h1{font-family:"Newsreader",Georgia,serif;font-size:clamp(38px,6vw,58px);line-height:1.05;margin:0 0 14px;letter-spacing:-.02em;font-weight:500}
+h2{font-family:"Newsreader",Georgia,serif;font-size:22px;font-weight:600;margin:36px 0 10px;letter-spacing:-.005em}
+.lockup{display:block;width:280px;max-width:100%;height:auto;margin-bottom:28px}
+.tag{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.14em;background:var(--ink);color:var(--paper);padding:3px 10px;border-radius:2px;margin-bottom:20px}
+.sub{font-family:"Newsreader",Georgia,serif;font-style:italic;font-size:22px;color:var(--ink-soft);margin:0 0 22px;line-height:1.35;max-width:36ch}
+.lede{font-size:17px;color:var(--ink-soft);max-width:56ch;margin:0 0 22px}
+.lede strong{color:var(--ink);font-weight:600}
+.rule{border:none;border-top:1px solid rgba(21,20,15,.14);margin:40px 0 32px;position:relative}
+.rule::after{content:"";position:absolute;top:-2px;left:0;width:56px;border-top:3px solid var(--terracotta)}
 code,pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px}
-pre{background:#0F172A;color:#F5F1EA;padding:14px 16px;border-radius:4px;overflow-x:auto}
-code{background:#eaeaea;padding:1px 5px;border-radius:2px}
-.note{border-left:3px solid #B08D3E;padding:10px 14px;background:#fff;color:#555;font-size:14px;margin:14px 0}
-.cta{display:inline-block;font-weight:700;font-size:14px;background:#0F172A;color:#F5F1EA;padding:10px 18px;border-radius:3px;text-decoration:none;margin-top:12px}
-a{color:#7a2e2e}a.cta{color:#F5F1EA}
+pre{background:var(--ink);color:var(--paper);padding:14px 16px;border-radius:4px;overflow-x:auto;line-height:1.5}
+code{background:#ece5d7;padding:1px 5px;border-radius:2px;font-size:13.5px}
+.note{border-left:3px solid var(--terracotta);padding:10px 14px;background:#fff;color:var(--ink-soft);font-size:14px;margin:14px 0}
+.cta{display:inline-block;font-weight:700;font-size:14px;background:var(--ink);color:var(--paper);padding:11px 20px;border-radius:3px;text-decoration:none}
+a{color:var(--terracotta)}a.cta{color:var(--paper)}
+.linkcta{font-weight:600;font-size:14px;color:var(--terracotta);margin-left:14px;text-decoration:none}
+.linkcta:hover{text-decoration:underline}
 </style></head><body>
-<h1 style="margin:0 0 4px"><img src="/logo.svg" alt="Gnosem" width="280" style="display:block;max-width:100%;height:auto"></h1>
-<span class="tag" style="margin:16px 0 6px">Prototype · alpha</span>
-<p style="margin-top:14px"><strong>Cross-vendor AI memory over MCP.</strong> One memory, every model. Claude, GPT, Kimi, Gemini, Cursor, Windsurf — anything that speaks MCP or can call an HTTP tool.</p>
-<a class="cta" href="/upgrade">See pricing →</a> &nbsp; <a href="/blog/launching-gnosem" style="font-weight:600;font-size:14px">Read the launch story →</a>
+${LOCKUP_SVG.replace('<svg ', '<svg class="lockup" ')}
+<span class="tag">Prototype · alpha</span>
+<h1>One memory. Every model.</h1>
+<p class="sub">Cross-vendor AI memory over the Model Context Protocol.</p>
+<p class="lede">One persistent memory store that <strong>Claude, ChatGPT, Cursor, Windsurf, Kimi, Gemini</strong> — anything that speaks MCP or can call an HTTP tool — can read and write to. Write a fact in one, recall it from any other.</p>
+<p><a class="cta" href="/upgrade">See pricing →</a><a class="linkcta" href="/blog/launching-gnosem">Read the launch story →</a></p>
+<hr class="rule">
 
 <h2>1. Sign up</h2>
 <pre>curl -sX POST https://gnosem.dev/signup \\
@@ -766,13 +787,29 @@ export default {
       });
     }
 
-    // Brand assets (SVG — scales cleanly, tiny payload, no PNG generation pipeline needed)
-    const svgHeaders = { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=86400", ...CORS };
-    if (url.pathname === "/logo.svg" && request.method === "GET") return new Response(LOCKUP_SVG, { headers: svgHeaders });
-    if (url.pathname === "/mark.svg" && request.method === "GET") return new Response(MARK_SVG, { headers: svgHeaders });
-    if (url.pathname === "/wordmark.svg" && request.method === "GET") return new Response(WORDMARK_SVG, { headers: svgHeaders });
-    if (url.pathname === "/favicon.svg" && request.method === "GET") return new Response(FAVICON_SVG, { headers: svgHeaders });
-    if (url.pathname === "/og.svg" && request.method === "GET") return new Response(OG_SVG, { headers: svgHeaders });
+    // Brand assets — file names match brand/*.svg from the Seal system. Short cache (1h).
+    // The old /mark.svg + /logo.svg + /favicon.svg + /og.svg paths from the pre-Seal palette
+    // are still routed for backward compat but point to the new SVGs so anything embedded on
+    // external sites keeps working with the current brand.
+    const svgHeaders = { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=3600", ...CORS };
+    const svgOK = (method) => method === "GET" || method === "HEAD";
+    const svg = (body) => new Response(request.method === "HEAD" ? null : body, { headers: svgHeaders });
+    if (svgOK(request.method)) {
+      switch (url.pathname) {
+        // New Seal-system paths (match brand/ file names)
+        case "/gnosem-mark.svg":         return svg(MARK_SVG);
+        case "/gnosem-mark-ink.svg":     return svg(MARK_INK_SVG);
+        case "/gnosem-mark-inverse.svg": return svg(MARK_INVERSE_SVG);
+        case "/gnosem-lockup.svg":       return svg(LOCKUP_SVG);
+        case "/gnosem-lockup-inverse.svg": return svg(LOCKUP_INVERSE_SVG);
+        case "/favicon-ink.svg":         return svg(FAVICON_INK_SVG);
+        // Legacy paths — point at new SVGs so external embeds pick up the refresh
+        case "/mark.svg":                return svg(MARK_SVG);
+        case "/logo.svg":                return svg(LOCKUP_SVG);
+        case "/favicon.svg":             return svg(FAVICON_SVG);
+        case "/og.svg":                  return svg(OG_SVG);
+      }
+    }
 
     // AI discovery: llms.txt (per llmstxt.org — adopted by Anthropic, Cursor, Cloudflare, Perplexity)
     if (url.pathname === "/llms.txt" && request.method === "GET") {
