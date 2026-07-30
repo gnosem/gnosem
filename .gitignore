@@ -1,0 +1,11 @@
+.wrangler/
+.firecrawl/
+node_modules/
+.dev.vars
+.env
+.env.local
+.DS_Store
+*.log
+
+# Internal launch/marketing prep — not for the public repo.
+launch/

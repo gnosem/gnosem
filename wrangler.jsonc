@@ -1,0 +1,29 @@
+{
+  "name": "sharedmem",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sharedmem",
+      "database_id": "5a629266-d37f-4797-b492-b52ec1e9914b"
+    }
+  ],
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "sharedmem-embeddings"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "routes": [
+    { "pattern": "gnosem.com", "custom_domain": true },
+    { "pattern": "www.gnosem.com", "custom_domain": true },
+    { "pattern": "gnosem.dev", "custom_domain": true },
+    { "pattern": "www.gnosem.dev", "custom_domain": true }
+  ]
+}
