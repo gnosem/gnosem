@@ -732,9 +732,11 @@ export default {
       return new Response(null, { status: 204, headers: CORS });
     }
 
-    // Landing page
-    if (url.pathname === "/" && request.method === "GET") {
-      return new Response(landingHtml(), { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
+    // Landing page — short cache so branding/copy updates propagate within ~5 min.
+    if (url.pathname === "/" && (request.method === "GET" || request.method === "HEAD")) {
+      return new Response(request.method === "HEAD" ? null : landingHtml(), {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300, must-revalidate", ...CORS },
+      });
     }
 
     // Blog
