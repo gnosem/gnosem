@@ -769,6 +769,21 @@ async function toolMemoryWriteBulk(env, ctx, args) {
   }));
 
   // Phase 3: semantic dedup + free-tier gating + INSERT queueing.
+  // Helper: when we resolve an entry that had in-batch hash-waiters, back-fill them
+  // with the resolved id + created_at. Called on every terminal branch (semantic
+  // dedup / free-tier fail / normal insert) so waiters never end up with a naked
+  // { exact_duplicate: true } lacking an id.
+  const backfillWaiters = (hash, resolved) => {
+    const waiters = pendingIndicesByHash.get(hash);
+    if (!waiters || !waiters.length) return;
+    for (const wi of waiters) {
+      results[wi] = resolved
+        ? { id: resolved.id, created_at: resolved.created_at, exact_duplicate: true }
+        : { error: "primary entry failed; duplicate skipped" };
+    }
+    pendingIndicesByHash.set(hash, []);
+  };
+
   const toInsertStmts = [];
   const vectorizeUpserts = [];
   for (let idx = 0; idx < aiOutcomes.length; idx++) {
@@ -776,6 +791,7 @@ async function toolMemoryWriteBulk(env, ctx, args) {
     const p = stillPending[idx];
     if (o.status !== "fulfilled") {
       results[p.i] = { error: (o.reason && o.reason.message) || "embed/optimize failed" };
+      backfillWaiters(p.contentHash, null);
       continue;
     }
     const { vector, opt } = o.value;
@@ -793,6 +809,8 @@ async function toolMemoryWriteBulk(env, ctx, args) {
             deduped: true,
             matched_score: Number(top.score.toFixed(4)),
           };
+          seenInBatch.set(p.contentHash, { id: existing.id, created_at: existing.created_at });
+          backfillWaiters(p.contentHash, { id: existing.id, created_at: existing.created_at });
           continue;
         }
       }
@@ -800,6 +818,7 @@ async function toolMemoryWriteBulk(env, ctx, args) {
     // Free-tier gating: consume one slot; if none remain, fail with the standard error.
     if (freeRemaining <= 0) {
       results[p.i] = { error: `Free-tier limit (${FREE_TIER_MEMORY_LIMIT} memories) reached. Upgrade to Gnosem Pro for unlimited: https://gnosem.dev/upgrade` };
+      backfillWaiters(p.contentHash, null);
       continue;
     }
     freeRemaining -= 1;
@@ -814,22 +833,14 @@ async function toolMemoryWriteBulk(env, ctx, args) {
       ).bind(id, userId, p.content, JSON.stringify(p.tags), p.writtenBy, p.sessionId, now, optimized, contentBytes, optimizedBytes, p.contentHash)
     );
     vectorizeUpserts.push({ id, values: vector, metadata: { user_id: userId, created_at: now } });
-    const row = {
+    results[p.i] = {
       id,
       created_at: now,
       optimized: optimized !== null,
       ...(optimized ? { compression_ratio: Number((optimizedBytes / contentBytes).toFixed(3)) } : {}),
     };
-    results[p.i] = row;
-    // Backfill any earlier-batch entries whose hash matched but were waiting for our id.
-    const waiters = pendingIndicesByHash.get(p.contentHash);
-    if (waiters && waiters.length) {
-      for (const wi of waiters) {
-        results[wi] = { id, created_at: now, exact_duplicate: true };
-      }
-      pendingIndicesByHash.set(p.contentHash, []);
-    }
     seenInBatch.set(p.contentHash, { id, created_at: now });
+    backfillWaiters(p.contentHash, { id, created_at: now });
   }
 
   // Phase 4: commit all inserts as a single D1 batch + one Vectorize upsert.
