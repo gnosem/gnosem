@@ -820,7 +820,10 @@ ${LOCKUP_SVG.replace('<svg ', '<svg class="lockup" ')}
   -d '{"email":"you@example.com"}'</pre>
 <p>Returns a one-time <code>api_key</code>. Save it — it's not shown again.</p>
 
-<h2>2. Add to Claude Desktop / Cursor / any MCP client</h2>
+<h2>2. Install</h2>
+<pre>npx gnosem-install</pre>
+<p>Auto-detects and configures Claude Desktop, Claude Code, Cursor, Windsurf, and Zed on this machine. Prompts for your API key, merges the <code>gnosem</code> entry into each config alongside your existing MCP servers, backs up every file it touches. Then restart the affected clients.</p>
+<p style="margin-top:12px;font-size:14px;color:var(--ink-soft)">Prefer to configure manually? Add this to your client's MCP config:</p>
 <pre>{
   "mcpServers": {
     "gnosem": {
@@ -829,7 +832,7 @@ ${LOCKUP_SVG.replace('<svg ', '<svg class="lockup" ')}
     }
   }
 }</pre>
-<p>Restart the client. It now sees 5 tools: <code>memory_write</code>, <code>memory_search</code>, <code>memory_list</code>, <code>memory_forget</code>, <code>memory_supersede</code>.</p>
+<p>After restart, your assistant sees 5 tools: <code>memory_write</code>, <code>memory_search</code>, <code>memory_list</code>, <code>memory_forget</code>, <code>memory_supersede</code>.</p>
 
 <h2>3. Try a write + search from any client</h2>
 <pre>curl -sX POST https://gnosem.dev/mcp \\

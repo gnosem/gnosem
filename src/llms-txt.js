@@ -39,7 +39,15 @@ Example: 420-char prose about a Rust web scraper compresses to a 309-char struct
 - **Free**: 200 memories, 1 API key, community support
 - **Pro**: $9/month or $90/year (2 months free) — unlimited memories, 1GB storage, unlimited API keys, priority indexing, exports
 
-## Quickstart (Claude Desktop / Cursor / Windsurf / Zed)
+## Quickstart (one-command install for all MCP clients)
+
+\`\`\`
+npx gnosem-install
+\`\`\`
+
+Auto-detects and configures Claude Desktop, Claude Code, Cursor, Windsurf, and Zed. Prompts for your API key (or pass \`--key gn_...\` non-interactively). Backs up every config it touches. Restart the affected clients — all five tools appear immediately.
+
+## Quickstart (manual config for a single client)
 
 \`\`\`json
 {

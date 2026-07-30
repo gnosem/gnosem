@@ -40,7 +40,23 @@ Long memories (>400 chars) are automatically compressed on write to a structured
 
 Compression is guarded — if the model output isn't actually shorter, gnosem falls back to storing raw only. Fail-open: any AI error still saves the memory.
 
-## Quickstart — Claude Desktop / Cursor / Windsurf / Zed
+## Quickstart
+
+```bash
+npx gnosem-install
+```
+
+Auto-detects and configures every MCP-capable client on your machine (Claude Desktop, Claude Code, Cursor, Windsurf, Zed). Prompts for your API key and merges the `gnosem` entry alongside your existing servers. Restart the affected clients — the five memory tools appear immediately.
+
+Get an API key at [gnosem.dev](https://gnosem.dev), or via the API:
+```bash
+curl -sX POST https://gnosem.dev/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com"}'
+```
+The key is displayed once. Save it.
+
+### Manual config (any MCP client)
 
 ```json
 {
@@ -52,16 +68,6 @@ Compression is guarded — if the model output isn't actually shorter, gnosem fa
   }
 }
 ```
-
-Restart the client. All five memory tools appear immediately.
-
-Get an API key:
-```bash
-curl -sX POST https://gnosem.dev/signup \
-  -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com"}'
-```
-The key is displayed once. Save it.
 
 ## Quickstart — any HTTP client
 
