@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "dev.gnosem/gnosem",
+  "title": "Gnosem",
+  "description": "Cross-vendor AI memory over MCP. One semantic store, readable and writeable from every MCP client.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/gnosem/gnosem",
+    "source": "github"
+  },
+  "websiteUrl": "https://gnosem.dev",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://gnosem.dev/mcp"
+    }
+  ]
+}
