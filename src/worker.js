@@ -726,6 +726,23 @@ export default {
       return new Response(landingHtml(), { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
     }
 
+    // .well-known/mcp/server-card.json — for MCP registries that auto-scan servers (Smithery, Glama).
+    // Our /mcp endpoint is Bearer-gated, so anonymous auto-scanners can't call initialize/tools/list.
+    // This card exposes the same manifest data statically. Same shape as server.json for registry.mcp.io.
+    if (url.pathname === "/.well-known/mcp/server-card.json" && request.method === "GET") {
+      return json({
+        name: "dev.gnosem/gnosem",
+        title: "Gnosem",
+        description: "Cross-vendor AI memory over MCP. One semantic store, readable and writeable from every MCP client.",
+        version: "1.0.0",
+        websiteUrl: "https://gnosem.dev",
+        repository: { url: "https://github.com/gnosem/gnosem", source: "github" },
+        remotes: [{ type: "streamable-http", url: "https://gnosem.dev/mcp" }],
+        auth: { type: "bearer", tokenAcquisitionUrl: "https://gnosem.dev/signup" },
+        tools: TOOLS.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+      });
+    }
+
     // Brand assets (SVG — scales cleanly, tiny payload, no PNG generation pipeline needed)
     const svgHeaders = { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=86400", ...CORS };
     if (url.pathname === "/logo.svg" && request.method === "GET") return new Response(LOCKUP_SVG, { headers: svgHeaders });
