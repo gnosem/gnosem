@@ -31,6 +31,167 @@ a.cta{color:var(--paper)}
 
 export const POSTS = [
   {
+    slug: "security-posture",
+    title: "Gnosem's security posture — what we do to keep your memory yours",
+    subtitle: "Two-layer per-user isolation, no plaintext key storage, magic links that never leak, and the specific bug we shipped and patched to earn that guarantee.",
+    published: "2026-07-30",
+    readingMinutes: 6,
+    description: "How Gnosem enforces per-user isolation at both the application and query-engine layers, hashes every API key on write, and refuses to return magic-link URLs in any HTTP response — plus a case study of the one time we got that last one wrong.",
+    keywords: "MCP server security, multi-tenant vector database isolation, per-user Vectorize filter, API key hashing, magic-link account-takeover, HTTP account enumeration oracle, gnosem security",
+    bodyHtml: `
+<p>Every hosted memory service is a multi-tenant vector database with a public URL. If tenant A can read tenant B's memories, the product is broken and probably illegal. This post walks through the specific defenses Gnosem uses to make cross-tenant reads impossible — and one case study of what happens when a "small convenience" flag punches a hole in that guarantee.</p>
+
+<h2 id="two-layer-per-user-isolation">Two-layer per-user isolation</h2>
+
+<p>Isolation is enforced at two independent layers. A bug in one layer alone doesn't create a leak.</p>
+
+<p><strong>Layer 1 — application.</strong> Every Bearer token maps to exactly one <code>user_id</code> in the D1 <code>api_keys</code> table. Every SQL query that touches memory data includes <code>WHERE user_id = ?</code> bound to that authenticated user. There is no code path in the codebase — search / list / forget / supersede / export — that fetches memory rows without that filter. A broken tool implementation that tried to fetch memories by <code>id</code> alone would still fail because the query wrappers all require <code>user_id</code>.</p>
+
+<p><strong>Layer 2 — vector engine.</strong> Every <a href="https://developers.cloudflare.com/vectorize/">Cloudflare Vectorize</a> query passes <code>filter: { user_id: &lt;user_id&gt; }</code>. Vectorize applies this filter inside the vector search itself — vectors from other users are excluded from the candidate pool before scoring. This is not just belt-and-suspenders; it means a bug in the D1 layer alone can't leak vectors across tenants. The vector store simply won't return them.</p>
+
+<p>For the metadata filter to actually work, the index needs a metadata index on <code>user_id</code> at provisioning time:</p>
+
+<pre><code>npx wrangler vectorize create-metadata-index &lt;index&gt; \\
+  --property-name=user_id --type=string</code></pre>
+
+<p>Without that command, filter queries silently return empty results — a subtle footgun. We hit it in early testing and it cost half an hour of "why is search returning nothing?" debugging. The fix was one command; the failure mode is well-hidden.</p>
+
+<h2 id="key-storage">API keys are stored hashed, never in plaintext</h2>
+
+<p>When a user calls <code>POST /signup</code>, the server generates a 128-bit random key formatted as <code>gn_&lt;32 hex&gt;</code>, returns the plaintext once, and stores only the SHA-256 hash in D1. On every subsequent request, the incoming Bearer token is hashed and compared against stored hashes. The plaintext never lives in our database.</p>
+
+<p>This has two useful properties:</p>
+
+<ol>
+<li>A database dump does not reveal working API keys. An attacker who exfiltrated D1 rows still can't authenticate as any user.</li>
+<li>The dashboard can't "reveal" your existing key on demand, because we don't have it. If you lose your key, you rotate — which revokes the old and issues a new one. Slightly less convenient than a "show my key" button, materially more secure.</li>
+</ol>
+
+<h2 id="magic-link-never-returned">Magic-link URLs are never returned in HTTP responses</h2>
+
+<p>This one is the case study. In an early version of the magic-link auth code, the <code>POST /auth/request</code> endpoint had a "fallback for testing" branch: if the email provider wasn't configured, it would return the sign-in link in the JSON response body instead of emailing it. The idea was to let developers test the flow before wiring up email delivery.</p>
+
+<p>That's an account-takeover vulnerability. Because <code>/auth/verify</code> trades the link for a 30-day session cookie, <em>any unauthenticated caller who knew a registered user's email address could take over that account without inbox access</em>. The fallback flag punched a hole through the "you need to receive the email" security boundary.</p>
+
+<p>We caught it and patched it in <a href="https://github.com/gnosem/gnosem/commit/ab12466">ab12466</a>. The new behavior: the endpoint returns an identical opaque success message whether or not email was actually sent, whether or not the email is registered, whether or not the provider is configured. Server-side send failures are logged; nothing is echoed back.</p>
+
+<p>The same commit fixed a related bug: the endpoint had been returning different response bodies for registered vs. unregistered emails, making it an <strong>account-enumeration oracle</strong> even though the comment claimed otherwise. Both branches now return the same body, so an attacker can't distinguish "this email has an account" from "this email doesn't."</p>
+
+<p>Lesson: "convenience for testing" flags in security-sensitive endpoints are the class of bug that gets exploited the day after launch. If a test path needs to bypass a security boundary, gate it behind a compile-time or config-time flag that is impossible to trip in production — not a runtime fallback.</p>
+
+<h2 id="cookie-hardening">Session cookies</h2>
+
+<p>The magic-link flow issues an HMAC-signed session cookie on successful <code>/auth/verify</code>. The cookie is:</p>
+
+<ul>
+<li><strong>HttpOnly</strong> — JavaScript can't read it, so XSS on the dashboard can't steal it.</li>
+<li><strong>Secure</strong> — sent only over HTTPS.</li>
+<li><strong>SameSite=Lax</strong> — sent on same-site navigations but not cross-site POSTs, defeating a class of CSRF attacks.</li>
+<li><strong>Max-Age 30 days</strong> — bounded lifetime, no refresh dance.</li>
+<li><strong>Signed with <code>MAGIC_LINK_SECRET</code></strong> — an HMAC of <code>{user_id, expires_at}</code>. A tampered cookie fails verification and is rejected.</li>
+</ul>
+
+<h2 id="what-cloudflare-does">What Cloudflare handles on our behalf</h2>
+
+<p>Some concerns just aren't ours to worry about because the whole stack sits on Cloudflare:</p>
+
+<ul>
+<li><strong>DDoS.</strong> Cloudflare's edge absorbs volumetric attacks before requests hit the Worker.</li>
+<li><strong>TLS.</strong> Cloudflare terminates HTTPS with modern ciphers, HSTS on gnosem.dev + gnosem.com.</li>
+<li><strong>Encryption at rest.</strong> D1 and Vectorize encrypt storage transparently.</li>
+<li><strong>Physical + network security.</strong> Cloudflare's compliance program covers SOC 2, ISO 27001, PCI DSS.</li>
+</ul>
+
+<h2 id="what-we-havent-done-yet">What we haven't done yet (honesty)</h2>
+
+<ul>
+<li><strong>Rate limiting on <code>/signup</code> and <code>/auth/request</code>.</strong> No per-IP quota today. An attacker could spam signups or magic-link requests. The impact of the latter is bounded (Brevo will 429 us before serious cost) but real. Adding D1-backed sliding-window limits is the next security workstream.</li>
+<li><strong>End-to-end encryption.</strong> Memories are stored server-side in plaintext (Cloudflare encrypts at rest, but we hold the key). If you require zero-knowledge storage, this isn't the product yet. Local-first sync with user-held keys is on the roadmap.</li>
+<li><strong>Formal security audit.</strong> No third-party pentest yet. If you're in a regulated industry and want one, tell us — we'll get one before you'd need to sign a contract.</li>
+</ul>
+
+<p>Every gnosem write ships with provenance (<code>written_by</code> and <code>session_id</code>), so if a client ever writes something unexpected, you can trace which client + session did it. Combined with <a href="/blog/auditing-your-ai-memory">auditing via <code>memory_list</code></a>, that gives you a full record of who touched your memory.</p>
+
+<p>The <a href="https://github.com/gnosem/gnosem">source is MIT-licensed on GitHub</a>. If you want to audit any of this yourself, that's the fastest path — <code>src/worker.js</code> is one file and the security-critical paths are marked with comments.</p>
+`,
+  },
+  {
+    slug: "export-your-memory",
+    title: "How to export every one of your Gnosem memories",
+    subtitle: "One HTTP call, one file, no lock-in. The portable format that any future host can import.",
+    published: "2026-07-30",
+    readingMinutes: 4,
+    description: "The GET /export endpoint returns a portable JSON dump of every memory on your Gnosem account — raw content, LLM-optimized form, tags, provenance, timestamps. Take it with you.",
+    keywords: "export gnosem memory, MCP memory portability, JSON dump AI memory, gnosem export endpoint, AI memory migration, memory data portability",
+    bodyHtml: `
+<p>The best argument that a memory service isn't a lock-in trap is a working export button. Gnosem's is at <code>GET /export</code>, available to every account regardless of tier. This post shows what it returns and why the shape is what it is.</p>
+
+<h2 id="the-simplest-way">The simplest way</h2>
+
+<p>From the <a href="/dashboard">dashboard</a>, click "Download JSON export." A file named <code>gnosem-export-YYYY-MM-DD.json</code> downloads.</p>
+
+<h2 id="via-curl">Via <code>curl</code></h2>
+
+<pre><code>curl -sH "Authorization: Bearer gn_your_key" \\
+  https://gnosem.dev/export &gt; gnosem-export.json</code></pre>
+
+<p>The response is served with <code>Content-Disposition: attachment</code>, so a browser saves it directly rather than rendering.</p>
+
+<h2 id="what-you-get">What you get</h2>
+
+<p>The file is a single JSON object:</p>
+
+<pre><code>{
+  "format": "gnosem/export/v1",
+  "exported_at": 1785436412386,
+  "user_id": "8b5c3c98-b906-4266-82aa-c37aadf88b3b",
+  "plan": "pro",
+  "counts": { "memories": 15, "includes_forgotten": false, "includes_superseded": false },
+  "memories": [
+    {
+      "id": "0b3f1ee1-b673-418a-8c5f-1a4460f4429c",
+      "content": "I prefer Postgres over MongoDB for greenfield work…",
+      "content_optimized": "TOPIC=database | PREFERENCE=Postgres | REASON=greenfield_fit",
+      "tags": ["preference","stack"],
+      "written_by": "claude-code",
+      "session_id": "01HXY...",
+      "created_at": 1785372156851
+    }
+  ]
+}</code></pre>
+
+<p>A few deliberate shape choices:</p>
+
+<ul>
+<li><strong>Both <code>content</code> and <code>content_optimized</code> are present.</strong> The raw prose is what you wrote. The optimized form is the structured-facts compression Gnosem generates on write for <a href="/blog/ai-optimized-memory-storage">token-efficient LLM ingestion</a>. If you're migrating to another host, take the raw; the compressed form is a Gnosem-specific artifact.</li>
+<li><strong>Tags are decoded to real JSON arrays.</strong> No <code>"[\"preference\",\"stack\"]"</code> string escaping to unwind on the other side.</li>
+<li><strong>Provenance travels.</strong> <code>written_by</code> and <code>session_id</code> stay in the export, so you can rebuild the same audit trail elsewhere. If Claude wrote a fact and ChatGPT wrote a fact, the destination knows which is which.</li>
+<li><strong>Timestamps are ms epoch.</strong> Sortable, comparable, unambiguous. No timezone parsing.</li>
+</ul>
+
+<h2 id="soft-deleted-rows">Getting your deleted rows too</h2>
+
+<p>By default the export excludes memories you've forgotten and memories that have been superseded (they still exist in D1 but are hidden from reads). If you're auditing your account or migrating a full history, opt in:</p>
+
+<pre><code>curl -sH "Authorization: Bearer gn_your_key" \\
+  "https://gnosem.dev/export?include_forgotten=1&include_superseded=1" \\
+  &gt; gnosem-full-export.json</code></pre>
+
+<p>Rows in the extended export carry the extra fields <code>forgotten_at</code> and <code>superseded_by</code> so you can distinguish current from historical.</p>
+
+<h2 id="what-to-do-with-it">What to do with it</h2>
+
+<ul>
+<li><strong>Back it up.</strong> Cron this against your account nightly and drop the file in your cloud storage. Zero-effort disaster recovery.</li>
+<li><strong>Migrate elsewhere.</strong> The format is self-describing — any receiving system can walk <code>memories[]</code> and map fields.</li>
+<li><strong>Audit.</strong> Feed it into a script that filters by <code>written_by</code> to see which of your AI clients has been writing the most, or by <code>tags</code> to see what topics dominate.</li>
+<li><strong>Build over it.</strong> The export is the same data <code>memory_list</code> would return over MCP, just in bulk. Anything you'd build against the live tools works against a dump.</li>
+</ul>
+
+<p>Portability isn't a feature we advertise; it's a promise we've paid the engineering cost to keep. If you ever leave Gnosem, you leave with your data in a shape any receiving system can import. That's the whole reason gnosem exists — memory belongs to the user, not the vendor.</p>
+`,
+  },
+  {
     slug: "gnosem-vs-mem0-letta-zep",
     title: "Gnosem vs. mem0, Letta, Zep: when hosted MCP memory is the right choice",
     subtitle: "A factual comparison against the popular memory libraries — how each is architected, what each is for, and why the choice usually comes down to whether you're building an app or using one.",
