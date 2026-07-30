@@ -1,0 +1,51 @@
+{
+  "name": "@gnosem/client",
+  "version": "0.1.0",
+  "description": "Official TypeScript client for Gnosem — hosted, cross-vendor AI memory over MCP. Zero runtime deps, native fetch, Node 18+.",
+  "keywords": [
+    "gnosem",
+    "mcp",
+    "ai-memory",
+    "memory",
+    "sdk",
+    "client",
+    "typescript",
+    "claude",
+    "chatgpt",
+    "cursor"
+  ],
+  "homepage": "https://gnosem.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gnosem/gnosem",
+    "directory": "sdk-ts"
+  },
+  "bugs": "https://github.com/gnosem/gnosem/issues",
+  "license": "MIT",
+  "author": "CUETV LLC",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.0"
+  }
+}
