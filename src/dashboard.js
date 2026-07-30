@@ -62,19 +62,13 @@ pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;backgroun
 
 <div id="signin" class="hidden">
   <h1>Sign in</h1>
-  <p class="small">Two ways to sign in — email link (if your account has one on file) or paste your API key directly.</p>
+  <p class="small">Paste your Gnosem API key to view your account and memories. Your key stays in this browser only — it is not sent anywhere except gnosem.dev.</p>
 
-  <h2 style="margin-top:20px">Email me a sign-in link</h2>
-  <p><input id="email-input" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false"></p>
-  <p><button class="btn" id="email-btn">Send sign-in link</button></p>
-  <p id="email-msg" class="small hidden"></p>
-
-  <h2 style="margin-top:32px">Or paste your API key</h2>
-  <p><input id="key-input" type="password" placeholder="gn_…" autocomplete="off" spellcheck="false"></p>
-  <p><button class="btn" id="signin-btn">Sign in with key</button></p>
+  <p style="margin-top:20px"><input id="key-input" type="password" placeholder="gn_…" autocomplete="off" spellcheck="false"></p>
+  <p><button class="btn" id="signin-btn">Sign in</button></p>
   <p id="signin-err" class="err hidden"></p>
 
-  <p class="small" style="margin-top:32px">No account? <a href="/">Sign up on the homepage</a>.</p>
+  <p class="small" style="margin-top:32px">No account? <a href="/">Sign up on the homepage</a>. Email sign-in is coming soon.</p>
 </div>
 
 <div id="app" class="hidden">
@@ -241,28 +235,10 @@ $("signin-btn").addEventListener("click", () => {
 });
 $("key-input")?.addEventListener("keydown", (e) => { if (e.key === "Enter") $("signin-btn").click(); });
 
-$("email-btn").addEventListener("click", async () => {
-  const email = $("email-input").value.trim();
-  const msg = $("email-msg");
-  msg.className = "small";
-  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/.test(email)) { msg.textContent = "Please enter a valid email."; show(msg); return; }
-  $("email-btn").disabled = true;
-  msg.textContent = "Sending…"; show(msg);
-  try {
-    const r = await fetch("/auth/request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
-    const j = await r.json();
-    if (r.ok) {
-      msg.textContent = j.note || "Check your email for the sign-in link.";
-    } else {
-      msg.textContent = j.error || "Something went wrong.";
-    }
-  } catch (e) {
-    msg.textContent = "Network error. Try again.";
-  } finally {
-    $("email-btn").disabled = false;
-  }
-});
-$("email-input")?.addEventListener("keydown", (e) => { if (e.key === "Enter") $("email-btn").click(); });
+// NOTE: email/magic-link sign-in UI removed from the dashboard until a working transactional
+// email provider is wired up. Server endpoints (/auth/request, /auth/verify, /auth/logout) and
+// sendMagicLinkEmail() remain in src/worker.js — set ZEPTOMAIL_API_KEY (or swap providers) and
+// re-add the email inputs to bring this back. escapeHtml() is still imported above; leave it.
 
 $("signout-btn").addEventListener("click", async () => {
   clearKey();
