@@ -92,6 +92,12 @@ pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;backgroun
   <h2>Recent memories</h2>
   <div id="mem-list" class="card"><p class="small">Loading…</p></div>
 
+  <h2>Export</h2>
+  <div class="card">
+    <p class="small">Download every one of your memories as a portable JSON file. Includes the raw content, the LLM-optimized form, tags, provenance, and timestamps. Human- and machine-readable.</p>
+    <p style="margin-top:12px"><button class="btn" id="export-btn">Download JSON export</button></p>
+  </div>
+
   <h2>API key</h2>
   <div class="card">
     <p class="small">Rotate to get a new key. All current keys will be revoked — update every MCP client that uses this account before signing out.</p>
@@ -264,6 +270,28 @@ $("signout-btn").addEventListener("click", async () => {
   location.reload();
 });
 $("rotate-btn").addEventListener("click", rotateKey);
+
+$("export-btn").addEventListener("click", async () => {
+  const btn = $("export-btn");
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Preparing…";
+  try {
+    const r = await authedFetch("/export");
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "gnosem-export-" + new Date().toISOString().slice(0, 10) + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    btn.textContent = "Downloaded ✓";
+    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2500);
+  } catch (e) {
+    btn.textContent = "Failed — try again";
+    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2500);
+  }
+});
 
 boot();
 </script>

@@ -18,6 +18,13 @@ Every current AI vendor has proprietary memory: OpenAI's ChatGPT memory doesn't 
 
 - \`POST https://gnosem.dev/signup\` — create an account, receive an API key (one-time display)
 - \`POST https://gnosem.dev/mcp\` — MCP JSON-RPC 2.0 endpoint (Bearer auth)
+- \`GET  https://gnosem.dev/me\` — authenticated account summary (email, plan, memory_count, memory_limit)
+- \`GET  https://gnosem.dev/export\` — full JSON dump of the caller's memories (portable format, no lock-in)
+- \`POST https://gnosem.dev/auth/request\` — request a magic-link email for dashboard sign-in
+- \`POST https://gnosem.dev/keys/rotate\` — issue a new API key, revoke the current one
+- \`GET  https://gnosem.dev/dashboard\` — browser UI for account management
+- \`GET  https://gnosem.dev/demo/search\` — public read-only semantic search over a demo memory graph (no signup)
+- \`GET  https://gnosem.dev/health\` — uptime probe (JSON, no auth)
 - \`GET  https://gnosem.dev/upgrade\` — pricing + Pro upgrade page
 
 ## MCP tools exposed

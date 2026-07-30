@@ -1073,6 +1073,14 @@ export default {
       }
     }
 
+    // Health check — public, no auth. Uptime probes + external monitors hit this.
+    // Deliberately shallow: no DB round-trips, just confirms the Worker is warm and routing.
+    if (url.pathname === "/health" && (request.method === "GET" || request.method === "HEAD")) {
+      return new Response(request.method === "HEAD" ? null : JSON.stringify({ ok: true, service: "gnosem", time: Date.now() }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS },
+      });
+    }
+
     // Dashboard shell — public HTML; the client-side JS handles auth via Bearer in Authorization header.
     if ((url.pathname === "/dashboard" || url.pathname === "/dashboard/") && (request.method === "GET" || request.method === "HEAD")) {
       return new Response(request.method === "HEAD" ? null : dashboardHtml(), {
@@ -1244,6 +1252,51 @@ Sitemap: https://gnosem.dev/sitemap.xml
         subscription_period_end: user.subscription_period_end,
         memory_count: memoryCount,
         memory_limit: ctx.plan === "free" ? FREE_TIER_MEMORY_LIMIT : null,
+      });
+    }
+
+    // /export — full JSON dump of the caller's active memories. Portable format, no lock-in.
+    // Includes both raw content and LLM-optimized form when present, plus all metadata + tags.
+    // Response is a downloadable attachment. Forgotten + superseded rows are excluded by default;
+    // pass ?include_forgotten=1 or ?include_superseded=1 to include them (audit / migration use cases).
+    if (url.pathname === "/export" && (request.method === "GET" || request.method === "HEAD")) {
+      const includeForgotten = url.searchParams.get("include_forgotten") === "1";
+      const includeSuperseded = url.searchParams.get("include_superseded") === "1";
+      const filters = ["user_id = ?"];
+      if (!includeForgotten) filters.push("forgotten_at IS NULL");
+      if (!includeSuperseded) filters.push("superseded_by IS NULL");
+      const sql = `SELECT id, content, content_optimized, tags, written_by, session_id, created_at, superseded_by, forgotten_at
+                   FROM memories
+                   WHERE ${filters.join(" AND ")}
+                   ORDER BY created_at ASC`;
+      const rows = (await env.DB.prepare(sql).bind(ctx.user_id).all()).results || [];
+      const memories = rows.map(r => ({
+        id: r.id,
+        content: r.content,
+        content_optimized: r.content_optimized || null,
+        tags: (() => { try { return JSON.parse(r.tags || "[]"); } catch { return []; } })(),
+        written_by: r.written_by,
+        session_id: r.session_id,
+        created_at: r.created_at,
+        ...(r.superseded_by ? { superseded_by: r.superseded_by } : {}),
+        ...(r.forgotten_at ? { forgotten_at: r.forgotten_at } : {}),
+      }));
+      const dump = {
+        format: "gnosem/export/v1",
+        exported_at: Date.now(),
+        user_id: ctx.user_id,
+        plan: ctx.plan,
+        counts: { memories: memories.length, includes_forgotten: includeForgotten, includes_superseded: includeSuperseded },
+        memories,
+      };
+      const filename = `gnosem-export-${new Date().toISOString().slice(0, 10)}.json`;
+      return new Response(request.method === "HEAD" ? null : JSON.stringify(dump, null, 2), {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+          "Cache-Control": "no-store",
+          ...CORS,
+        },
       });
     }
 

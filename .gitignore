@@ -3,9 +3,12 @@
 node_modules/
 .dev.vars
 .env
-.env.local
+.env.*
 .DS_Store
 *.log
 
 # Internal launch/marketing prep — not for the public repo.
 launch/
+
+# Local scratch / cleanup artifacts (never publish)
+_to_delete/
