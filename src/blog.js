@@ -31,6 +31,304 @@ a.cta{color:var(--paper)}
 
 export const POSTS = [
   {
+    slug: "ai-optimized-memory-storage",
+    title: "Memories that Cost Fewer Tokens to Read",
+    subtitle: "How Gnosem compresses long prose into structured facts on write — so the reading LLM ingests the same meaning in a fraction of the context window.",
+    published: "2026-07-30",
+    readingMinutes: 7,
+    description: "Persistent AI memory has a token problem. Every recall pulls prose back into a model's context window. Gnosem writes long memories twice — once as prose for you, once as a structured-facts line for the reading LLM — so cross-vendor recall costs less context.",
+    keywords: "LLM context compression, AI memory optimization, structured facts extraction, semantic memory token efficiency, Workers AI llama-3.1, memory summarization",
+    bodyHtml: `
+<p>Persistent memory for AI assistants has a token problem. Every time an assistant recalls a memory, that memory has to be pulled back into its context window. A 2,000-character prose memory costs roughly 500 tokens on ingest. Multiply by the ten memories a semantic search returns, and you have spent 5,000 tokens before the model has generated a single word of response. In a 200,000-token context that is fine. In an 8,000-token context, it is a quarter of your budget spent on remembering.</p>
+
+<p>The obvious fix — "just make the memories shorter" — pushes the burden onto the user. They write a long memory because a long memory is what the situation deserves. Amputating it at save time loses information.</p>
+
+<p>Gnosem takes a different approach. It stores every long memory <em>twice</em>: once as the raw prose the user wrote, and once as a compressed structured-facts form generated on write by a small language model. The reading LLM gets the compressed form by default — same meaning, fewer tokens. The raw prose stays available for humans and for cases where phrasing matters.</p>
+
+<h2 id="the-write-path">The write path</h2>
+
+<p>When you call <code>memory_write</code> with content longer than 400 characters, the Worker fires two calls in parallel:</p>
+
+<ol>
+<li><strong>Embedding</strong> — the full raw content goes to Workers AI's <code>@cf/baai/bge-base-en-v1.5</code> model to produce a 768-dimension vector for semantic search. The embedding always sees the raw text so search hits match natural phrasing.</li>
+<li><strong>Compression</strong> — the raw content goes to <code>@cf/meta/llama-3.1-8b-instruct-fast</code> with a strict system prompt that produces one line of structured key-value pairs.</li>
+</ol>
+
+<p>The system prompt is the load-bearing piece:</p>
+
+<pre><code>You compress user memories into structured facts for AI consumption.
+Output ONE line of pipe-separated key: value pairs. Keys are UPPERCASE
+labels drawn from this set when applicable: TOPIC, PROJECT, DECISION,
+PREFERENCE, PERSON, PLACE, DATE, STACK, PROBLEM, SOLUTION, GOAL,
+CONSTRAINT, FACT, EVENT. Values are terse — no filler, no articles
+when droppable. Preserve every distinct fact from the input. Do not
+add information not in the input. Do not add preamble, quotes, or
+explanation. Output ONLY the pipe-separated line.</code></pre>
+
+<p>A real example. Raw input:</p>
+
+<blockquote>I have been working on a Rust web scraper for the past three weeks that captures pricing data from Amazon and eBay for competitive analysis. The stack is Rust with the chromiumoxide crate driving headless Chrome instances. Rate limiting has been the hardest part of the whole project — Amazon aggressively blocks IPs after about 30 requests per second so I have to route through a residential proxy pool from Bright Data which costs around 15 dollars per gigabyte of traffic.</blockquote>
+
+<p>Compressed output:</p>
+
+<pre><code>TOPIC=web_scraper | PROJECT=Rust_scraper | DECISION=use_chromiumoxide
+| STACK=Rust,chromiumoxide | PROBLEM=rate_limiting
+| CONSTRAINT=Amazon_blocks_after_30_rps
+| SOLUTION=residential_proxy_pool_Bright_Data
+| FACT=$15_per_GB</code></pre>
+
+<p>Raw: 475 characters. Compressed: 309 characters. 35% fewer bytes, all the same facts, and — critically — the structured form is easier for the next LLM to parse into its own working memory than freeform prose.</p>
+
+<h2 id="the-guard">The guard: fail-open, no lossy fallback</h2>
+
+<p>Compression is not always a win. Content full of proper nouns, IDs, or already-terse writing sometimes comes out <em>longer</em> in the structured form. Gnosem checks this at the byte level after the model responds: if the compressed output is not strictly shorter than the raw, it discards the compression and stores raw only. The memory still saves — the "compression" step is best-effort.</p>
+
+<p>The same applies to model errors. Workers AI can time out. It can rate-limit. It can return an empty string. In every failure case the memory still lands in D1 and Vectorize. The <code>content_optimized</code> column is nullable by design. Fail-open: the write never fails because compression failed.</p>
+
+<h2 id="the-read-path">The read path</h2>
+
+<p>By default, <code>memory_search</code> and <code>memory_list</code> return the compressed form as <code>content</code> and the raw prose as <code>content_raw</code>. Any MCP client reading a memory gets:</p>
+
+<pre><code>{
+  "id": "…",
+  "content": "TOPIC=web_scraper | PROJECT=Rust_scraper | …",
+  "content_raw": "I have been working on a Rust web scraper for the past three weeks…",
+  "optimized": true,
+  "tags": ["project", "scraper"],
+  "written_by": "claude-code",
+  "created_at": 1785372156851,
+  "score": 0.87
+}</code></pre>
+
+<p>The reading model consumes the shorter <code>content</code> by default. If your use case needs the original phrasing — quoting the user's own words in a reply, for example — pass <code>raw: true</code> on the search and <code>content</code> becomes the raw prose (and <code>content_raw</code> is dropped).</p>
+
+<p>Short memories (under 400 characters) skip the compression entirely. There is nothing to gain — the structured form would be roughly the same size. Those rows have <code>optimized: false</code> and only a <code>content</code> field.</p>
+
+<h2 id="cost">The cost economics</h2>
+
+<p>Every long-memory write incurs one extra Workers AI call — llama-3.1-8b-instruct-fast, priced at fractions of a cent per compression. In exchange, every subsequent read pays back tokens on the client side. If a memory is written once and read ten times over its lifetime, the compression pays for itself many times over. If it is never read again, the compression cost is a rounding error against the storage cost.</p>
+
+<p>The pattern is deliberately asymmetric: pay a small server-side cost on write to save a much larger client-side cost on read, over and over. This is the same trade-off databases make when they build an index at insert time to speed up every subsequent query.</p>
+
+<h2 id="what-gets-lost">What gets lost — and why we accept it</h2>
+
+<p>Structured extraction is lossy for tone. "I have been working on a Rust web scraper" and "PROJECT=Rust_scraper" carry the same information but different vibes. If your assistant is trying to write a response in your voice, the raw form matters. That is why <code>content_raw</code> is preserved verbatim, and why <code>raw: true</code> exists as an escape hatch.</p>
+
+<p>Structured extraction is also nondeterministic in surface form. The same raw memory compressed twice may come back with slightly different key labels — <code>TOPIC=web_scraper</code> vs. <code>SUBJECT=web_scraper</code>. Semantic search is unaffected because it embeds the raw content, not the compressed form. But if you were parsing the compressed output with a strict regex, you would have a bad time. Treat the compressed form as machine-readable prose, not as JSON.</p>
+
+<h2 id="why-this-only-works-because-of-mcp">Why this only works because of MCP</h2>
+
+<p>If Gnosem had to speak a different protocol to each vendor, this compression would be much harder to justify. Every client's read format would need its own handling. Because MCP is a standard tool-call interface, the compressed form flows uniformly to Claude, ChatGPT, Cursor, Windsurf, Zed, Kimi, and every other MCP client. The server compresses once; every client benefits.</p>
+
+<p>Try it: sign up at <a href="/">gnosem.dev</a>, write a paragraph-length memory, and inspect the response. You will see the <code>optimized: true</code> flag and the compression ratio inline.</p>
+`,
+  },
+  {
+    slug: "building-mcp-server-cloudflare-workers",
+    title: "Building an MCP Server on Cloudflare Workers",
+    subtitle: "Architecture notes from building Gnosem: Workers + D1 + Vectorize + Workers AI, with per-user isolation enforced at two layers and sub-100ms typical latency.",
+    published: "2026-07-30",
+    readingMinutes: 8,
+    description: "A concrete walkthrough of running an MCP server entirely on the Cloudflare edge — how the JSON-RPC transport works, how Vectorize's metadata filter enforces tenant isolation, and how streamable-HTTP simplifies auth versus SSE.",
+    keywords: "MCP server Cloudflare Workers, streamable HTTP transport MCP, Vectorize semantic search per user, D1 SQLite edge, Workers AI embedding, JSON-RPC MCP, multi-tenant vector database",
+    bodyHtml: `
+<p>Gnosem is a Model Context Protocol server that runs entirely on Cloudflare's edge. There is no origin server, no VPC, no container, no long-lived process. Every incoming MCP tool call is handled by a Worker invocation that lives for milliseconds. This post explains what that architecture looks like in practice and where the sharp edges are.</p>
+
+<h2 id="what-mcp-actually-is-on-the-wire">What MCP actually is on the wire</h2>
+
+<p>The Model Context Protocol looks intimidating from a distance. It has a spec, an official registry, dozens of transports, and vendor implementations. Underneath, it is JSON-RPC 2.0 over an HTTP request-response cycle. The important pieces for a server:</p>
+
+<ul>
+<li><strong>Initialize</strong> — the client sends a JSON-RPC <code>initialize</code> with its capabilities. Server responds with its <code>protocolVersion</code>, <code>capabilities</code>, and <code>serverInfo</code>.</li>
+<li><strong>List tools</strong> — <code>tools/list</code> returns an array of tool objects, each with a <code>name</code>, <code>description</code>, and JSON Schema <code>inputSchema</code>.</li>
+<li><strong>Call a tool</strong> — <code>tools/call</code> with <code>params: { name, arguments }</code>. Server executes and returns a <code>result</code>.</li>
+</ul>
+
+<p>That is 95% of what a hosted MCP server does. Everything else is transport plumbing.</p>
+
+<h2 id="streamable-http-vs-sse">Streamable HTTP versus SSE</h2>
+
+<p>MCP defines two remote transports: SSE (Server-Sent Events, a long-lived streaming connection) and streamable HTTP (plain POST request/response with optional streaming). Gnosem uses streamable HTTP and no streaming — every tool call is a single POST with a JSON body and a JSON response.</p>
+
+<p>Streamable HTTP is the right default for a Worker. Cloudflare Workers charge per invocation, and an invocation that streams for the length of a session bills a lot more than one that runs for 80ms and exits. It also plays well with Cloudflare's cache, edge routing, and DDoS protection because it looks like any other HTTPS POST. SSE requires the client to keep a socket open, which fights against every edge network's ability to route each request independently.</p>
+
+<p>The MCP spec accepts both transports as equal citizens. Clients that want to use Gnosem see <code>"type": "streamable-http"</code> in the server's registry manifest and know to POST tool calls one at a time.</p>
+
+<h2 id="auth-headers-not-sessions">Auth: headers, not sessions</h2>
+
+<p>Every request carries an <code>Authorization: Bearer gn_&lt;32 hex&gt;</code> header. The Worker's auth layer does a single query on <code>api_keys</code> keyed by the SHA-256 hash of the plaintext key (the plaintext is never stored). That query joins to <code>users</code> to fetch the plan and subscription state in the same round trip. Total latency: one D1 point lookup, typically 2–5ms at the edge.</p>
+
+<p>There is no session cookie, no OAuth flow, no refresh token. MCP tool calls are naturally stateless — every call from the reading LLM is a fresh POST — so session-level auth would be the wrong abstraction. Bearer-per-call also means the same key works from any client, any machine, any language, without an auth dance.</p>
+
+<h2 id="vectorize-per-user-isolation">Per-user isolation at two layers</h2>
+
+<p>A memory service is a multi-tenant vector database. If tenant A can see tenant B's embeddings, the product is broken. Gnosem enforces isolation at two layers so a bug in one doesn't create a leak.</p>
+
+<p><strong>Layer 1: D1.</strong> Every SQL statement that touches memory data has <code>WHERE user_id = ?</code> bound to the authenticated user's id. There is no query path in the codebase that fetches memory rows without that filter.</p>
+
+<p><strong>Layer 2: Vectorize.</strong> Every <code>VECTORIZE.query()</code> call passes <code>filter: { user_id: &lt;user_id&gt; }</code>. Vectorize enforces this filter inside the vector search itself — vectors from other users are excluded from the candidate pool before scoring. This is not just belt-and-suspenders; it means a bug in the D1 layer alone cannot leak vectors across tenants.</p>
+
+<p>For the Vectorize filter to work, you must create a metadata index on <code>user_id</code> when you provision the index:</p>
+
+<pre><code>npx wrangler vectorize create-metadata-index &lt;index_name&gt; \\
+  --property-name=user_id --type=string</code></pre>
+
+<p>Without this, filter queries silently return empty results. We discovered this in production when a beta tester's search returned nothing — the fix was one command, but the failure mode is a well-hidden footgun.</p>
+
+<h2 id="d1-and-vectorize-coordination">Keeping D1 and Vectorize in sync</h2>
+
+<p>Every memory has two homes: a row in D1 (structured metadata + content) and a vector in Vectorize (768-dim embedding). Both are inserted on write. Both are read on search: Vectorize returns the top-K matching vector IDs, and Gnosem hydrates the D1 rows in a single <code>SELECT ... WHERE id IN (?, ?, ?, ...)</code>.</p>
+
+<p>The interesting case is deletion. <code>memory_forget</code> soft-deletes the D1 row (sets <code>forgotten_at</code>) and also calls <code>VECTORIZE.deleteByIds()</code>. The two operations happen in the same request but they are not transactional across services. Cloudflare doesn't offer a 2PC coordinator. The mitigation is that the D1 read always filters <code>forgotten_at IS NULL</code>, so even if the Vectorize delete failed and left a stale vector, the D1 join would drop it from results. The stale vector is a small storage cost, not a correctness bug.</p>
+
+<h2 id="cold-starts-and-latency">Cold starts (there aren't any)</h2>
+
+<p>Workers boot in microseconds. There is no cold-start penalty in the JVM/Python sense because Workers use V8 isolates that come up with the runtime already warm. A memory_search from a client in North America hits an edge server in the same region, does two Worker invocations (one for auth + logic, one for the AI embedding call), one D1 read, one Vectorize read, and returns a response — typically in 50–150ms end to end. From Europe or APAC the latency is similar because the closest colo handles the request without cross-region hops.</p>
+
+<h2 id="what-doesnt-work-yet">What doesn't work yet</h2>
+
+<p>Two things a traditional backend gives you for free that a Worker does not:</p>
+
+<ul>
+<li><strong>Long-running jobs.</strong> Workers have a wall-clock limit per invocation. Anything that takes minutes — batch imports, big migrations — needs to be broken into small tasks. Gnosem doesn't have any of those today, but if we add JSON export or team-scope memory, we'll want Workflows or Queues.</li>
+<li><strong>Complex transactions across services.</strong> D1 and Vectorize each have their own consistency guarantees, but coordinating a transaction across both requires app-level compensating writes rather than 2PC. See the deletion note above.</li>
+</ul>
+
+<p>For a memory service, neither of these is a blocker. Every request is small, every operation is idempotent, and eventual consistency between D1 and Vectorize is acceptable because reads filter on the authoritative source (D1).</p>
+
+<h2 id="the-code">The code</h2>
+
+<p>The entire Worker is one file — <code>src/worker.js</code> in the <a href="https://github.com/gnosem/gnosem">gnosem/gnosem</a> repo. If you want to run your own copy: clone, run the four wrangler create commands in the README, set your Stripe keys if you want billing, and deploy. It's MIT licensed.</p>
+
+<p>The hosted service at <a href="/">gnosem.dev</a> is the recommended way to use it — one API key that follows you across every MCP client, no infra to run — but if you'd rather own your own memory graph on your own account, the self-host path is fully supported.</p>
+`,
+  },
+  {
+    slug: "publishing-to-official-mcp-registry",
+    title: "Publishing to the Official MCP Registry",
+    subtitle: "The 20-minute path from server-live to <code>registry.modelcontextprotocol.io</code>, with DNS-verified namespace and cascading auto-ingestion into PulseMCP, Smithery, Glama, and mcp.so.",
+    published: "2026-07-30",
+    readingMinutes: 6,
+    description: "A concrete walkthrough of publishing an MCP server to the Official MCP Registry, including the DNS TXT-record verification flow that lets you claim a namespace tied to your own domain.",
+    keywords: "publish MCP server registry, official MCP registry tutorial, mcp-publisher CLI, DNS verified MCP namespace, PulseMCP Smithery Glama auto ingest, dev.namespace MCP",
+    bodyHtml: `
+<p>The Official MCP Registry at <a href="https://registry.modelcontextprotocol.io">registry.modelcontextprotocol.io</a> went live in preview in late 2025. It is the canonical listing surface for MCP servers, backed by Anthropic, GitHub, PulseMCP, and Microsoft. Publishing there once ripples out to the downstream aggregators — PulseMCP, Smithery, Glama, mcp.so — over the following 24 to 72 hours without additional submissions.</p>
+
+<p>This is the actual sequence we followed to publish Gnosem. It took about 20 minutes end to end, most of which was waiting for DNS propagation.</p>
+
+<h2 id="prereqs">Prereqs</h2>
+
+<ul>
+<li>An MCP server reachable at a stable HTTPS URL (Gnosem: <code>https://gnosem.dev/mcp</code>).</li>
+<li>A domain you control (Gnosem: <code>gnosem.dev</code>).</li>
+<li>Access to your domain's DNS records — you'll be publishing a TXT record.</li>
+</ul>
+
+<p>You do not need a GitHub repo for the registry itself, but you'll want one for the downstream aggregators (Glama and mcp.so both require a repo URL). A README-only repo is fine.</p>
+
+<h2 id="step-1-install-the-cli">Step 1: install the CLI</h2>
+
+<pre><code>brew install mcp-publisher</code></pre>
+
+<p>Or grab a release from the <a href="https://github.com/modelcontextprotocol/registry">registry repo</a>. The binary is called <code>mcp-publisher</code> and does one thing: publishes <code>server.json</code> manifests to the registry.</p>
+
+<h2 id="step-2-write-server-json">Step 2: write server.json</h2>
+
+<p>At the root of your repo, create <code>server.json</code>. The schema is documented at <code>static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json</code>. Here is Gnosem's:</p>
+
+<pre><code>{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "dev.gnosem/gnosem",
+  "title": "Gnosem",
+  "description": "Cross-vendor AI memory over MCP. One semantic store, readable and writeable from every MCP client.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/gnosem/gnosem",
+    "source": "github"
+  },
+  "websiteUrl": "https://gnosem.dev",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://gnosem.dev/mcp"
+    }
+  ]
+}</code></pre>
+
+<p>Two things that trip publishers up:</p>
+
+<ol>
+<li><strong>Description length.</strong> The schema caps <code>description</code> at 100 characters. Ours is 98. Anything longer and validation rejects with HTTP 422.</li>
+<li><strong>Namespace format.</strong> The <code>name</code> follows a <code>&lt;namespace&gt;/&lt;server-name&gt;</code> pattern. If you're publishing under a domain you own (recommended for company-run servers), use the reverse-DNS form: <code>dev.gnosem/gnosem</code>. If you're publishing an npm-distributed server, use <code>io.github.&lt;user&gt;/&lt;package&gt;</code>.</li>
+</ol>
+
+<p>Validate before you publish:</p>
+
+<pre><code>mcp-publisher validate server.json</code></pre>
+
+<p>You want the response <code>✅ server.json is valid</code>. Any schema errors surface here with the exact field.</p>
+
+<h2 id="step-3-verify-your-namespace">Step 3: DNS-verify your namespace</h2>
+
+<p>To publish under <code>dev.gnosem/*</code>, you have to prove you control <code>gnosem.dev</code>. The registry does this with an Ed25519 signature attached to a DNS TXT record.</p>
+
+<p>Generate a keypair (keep it out of source control):</p>
+
+<pre><code>openssl genpkey -algorithm Ed25519 -out ~/.config/gnosem-mcp-key.pem
+chmod 600 ~/.config/gnosem-mcp-key.pem</code></pre>
+
+<p>Compute the TXT record value:</p>
+
+<pre><code>PUBKEY=$(openssl pkey -in ~/.config/gnosem-mcp-key.pem -pubout \\
+  -outform DER | tail -c 32 | base64)
+echo "v=MCPv1; k=ed25519; p=$PUBKEY"</code></pre>
+
+<p>Publish that TXT record at the apex of your domain (Name: <code>@</code>, Type: <code>TXT</code>, Content: the string above, TTL: 300s so it propagates fast). Confirm via <code>dig +short TXT gnosem.dev @1.1.1.1</code>. When both 1.1.1.1 and 8.8.8.8 return the string, you're ready.</p>
+
+<h2 id="step-4-login-and-publish">Step 4: login and publish</h2>
+
+<p>The publisher expects the private key in hex, not PEM. Convert on the fly:</p>
+
+<pre><code>HEX_KEY=$(openssl pkey -in ~/.config/gnosem-mcp-key.pem -outform DER \\
+  | tail -c 32 | xxd -p -c 64)
+
+mcp-publisher login dns --domain gnosem.dev --private-key "$HEX_KEY"</code></pre>
+
+<p>The CLI verifies the TXT record matches your public key. On success: <code>✓ Successfully logged in</code>.</p>
+
+<p>Then publish:</p>
+
+<pre><code>mcp-publisher publish server.json</code></pre>
+
+<p>You get <code>✓ Server dev.gnosem/gnosem version 1.0.0</code> and the listing is live.</p>
+
+<h2 id="step-5-verify">Step 5: verify</h2>
+
+<pre><code>curl "https://registry.modelcontextprotocol.io/v0/servers?search=gnosem" | jq .</code></pre>
+
+<p>You should see your server object with <code>_meta.io.modelcontextprotocol.registry/official.status: "active"</code>.</p>
+
+<h2 id="what-cascades">What cascades automatically</h2>
+
+<p>Publishing to the official registry feeds these downstream aggregators without further action:</p>
+
+<ul>
+<li><strong>PulseMCP</strong> — daily ingest from the official registry. Listings usually appear within 24 hours.</li>
+<li><strong>Smithery</strong> — ingests from the registry and may also auto-scan your MCP endpoint. If your <code>/mcp</code> is Bearer-gated (Gnosem's is), Smithery's scan will fail unless you also serve a <code>/.well-known/mcp/server-card.json</code> containing the same manifest.</li>
+<li><strong>Glama</strong> — pulls from the registry plus its own scan. Requires a public GitHub repo linked in <code>repository.url</code>.</li>
+<li><strong>mcp.so</strong> — ingests from the registry; may take a few days.</li>
+</ul>
+
+<p>These aren't guaranteed timelines — the aggregators run on their own schedules — but you shouldn't need to submit separately to any of them.</p>
+
+<h2 id="what-doesnt-cascade">What doesn't cascade</h2>
+
+<p>The two big <code>awesome-mcp-servers</code> lists on GitHub — <a href="https://github.com/punkpeye/awesome-mcp-servers">punkpeye/awesome-mcp-servers</a> and <a href="https://github.com/wong2/awesome-mcp-servers">wong2/awesome-mcp-servers</a> — do not auto-ingest. Those still require manual submissions: a GitHub PR for punkpeye's list, and a web form at <a href="https://mcpservers.org/submit">mcpservers.org/submit</a> for wong2's.</p>
+
+<p>If you're publishing your own MCP server, the whole flow above is one afternoon. The tooling is good enough that most of the time is spent waiting for DNS. The registry itself is fast, honest, and doesn't lock you into any vendor.</p>
+`,
+  },
+  {
     slug: "launching-gnosem",
     title: "The Memory Layer Belongs to the User, Not the Vendor",
     subtitle: "Introducing Gnosem: a hosted MCP server for cross-vendor AI memory.",
