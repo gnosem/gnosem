@@ -39,6 +39,11 @@ const OPTIMIZE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 const OPTIMIZE_THRESHOLD_CHARS = 400; // only compress memories longer than this
 const FREE_TIER_MEMORY_LIMIT = 200;
 
+// Public demo store — the /demo/search + /demo/list endpoints read from this user only.
+// User row lives in D1 with subscription_status='internal_demo' (see contextFromUserRow).
+// Never accept a user_id from the client for demo endpoints — this constant is the ONLY source.
+const DEMO_USER_ID = "8c3f9f38-af29-4320-9b85-a883fe25296d";
+
 // Stripe Payment Links (created 2026-07-29 on acct_1TekTGRLUmkPHer1 / CUETV LLC)
 const PLINK_MONTHLY = "https://buy.stripe.com/3cI5kF67Q4K26ZLfnRak005"; // $9/mo
 const PLINK_ANNUAL  = "https://buy.stripe.com/00waEZcwefoG4RD1x1ak004"; // $90/yr (2 months free)
@@ -85,6 +90,7 @@ function contextFromUserRow(row) {
     row.subscription_status === "active" ||
     row.subscription_status === "trialing" ||
     row.subscription_status === "internal_founder" ||
+    row.subscription_status === "internal_demo" ||
     (row.subscription_period_end && Date.now() < row.subscription_period_end + graceMs)
   );
   return { user_id: row.user_id || row.id, plan: stillPaid ? "pro" : "free", subscription_status: row.subscription_status };
@@ -537,6 +543,41 @@ async function handleMcp(request, env, ctx) {
   }
 }
 
+// ------------- public demo endpoints -------------
+//
+// Unauthenticated, read-only. Both endpoints hard-code DEMO_USER_ID server-side; the client
+// never gets to influence which user is queried. Rate limiting is handled by Cloudflare's
+// default DDoS layer — no per-request state beyond a D1 read.
+
+const DEMO_CACHE_HEADERS = { "Cache-Control": "public, max-age=60" };
+
+async function handleDemoSearch(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "invalid JSON body" }, 400, DEMO_CACHE_HEADERS); }
+  const query = String(body?.query || "").trim();
+  if (!query) return json({ error: "query is required" }, 400, DEMO_CACHE_HEADERS);
+  if (query.length > 500) return json({ error: "query too long (max 500 chars)" }, 400, DEMO_CACHE_HEADERS);
+  const k = Math.min(Math.max(Number(body?.k) || 5, 1), 10);
+  // Force demo user server-side — never trust anything from the client here.
+  const ctx = { user_id: DEMO_USER_ID, plan: "pro", subscription_status: "internal_demo" };
+  try {
+    const result = await toolMemorySearch(env, ctx, { query, k, raw: true });
+    return json(result, 200, DEMO_CACHE_HEADERS);
+  } catch (e) {
+    return json({ error: e.message || "search failed" }, 500, DEMO_CACHE_HEADERS);
+  }
+}
+
+async function handleDemoList(env) {
+  const ctx = { user_id: DEMO_USER_ID, plan: "pro", subscription_status: "internal_demo" };
+  try {
+    const result = await toolMemoryList(env, ctx, { limit: 50, raw: true });
+    return json(result, 200, DEMO_CACHE_HEADERS);
+  } catch (e) {
+    return json({ error: e.message || "list failed" }, 500, DEMO_CACHE_HEADERS);
+  }
+}
+
 // ------------- Stripe helpers + upgrade flow -------------
 
 async function stripeGet(env, apiPath) {
@@ -805,6 +846,38 @@ code{background:#ece5d7;padding:1px 5px;border-radius:2px;font-size:13.5px}
 a{color:var(--terracotta)}a.cta{color:var(--paper)}
 .linkcta{font-weight:600;font-size:14px;color:var(--terracotta);margin-left:14px;text-decoration:none}
 .linkcta:hover{text-decoration:underline}
+/* Demo widget */
+.demo{margin:0 0 8px;padding:22px 22px 20px;background:#fff;border:1.5px solid var(--ink);border-radius:6px}
+.demo h2{margin:0 0 4px}
+.demo .demo-hint{font-size:13px;color:var(--ink-soft);margin:0 0 14px}
+.demo form{display:flex;gap:8px;margin:0}
+.demo input[type=text]{flex:1;min-width:0;padding:11px 13px;border:1.5px solid var(--ink);border-radius:3px;background:var(--paper);color:var(--ink);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+.demo input[type=text]:focus{outline:none;border-color:var(--terracotta);box-shadow:0 0 0 3px rgba(162,96,63,.18)}
+.demo button{font-weight:700;font-size:14px;background:var(--ink);color:var(--paper);border:1.5px solid var(--ink);padding:11px 18px;border-radius:3px;cursor:pointer;white-space:nowrap}
+.demo button:hover{background:var(--terracotta);border-color:var(--terracotta)}
+.demo button:disabled{opacity:.6;cursor:progress}
+.demo .demo-meta{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:var(--ink-soft)}
+.demo .demo-meta a{color:var(--terracotta);text-decoration:none;font-weight:600}
+.demo .demo-meta a:hover{text-decoration:underline}
+.demo .demo-results{margin-top:14px;display:none}
+.demo .demo-results.active{display:block}
+.demo .demo-result{border-top:1px solid rgba(21,20,15,.14);padding:12px 0 10px}
+.demo .demo-result:first-child{border-top:none;padding-top:6px}
+.demo .demo-result .rc{font-size:14.5px;color:var(--ink);line-height:1.5}
+.demo .demo-result .rm{display:flex;gap:10px;align-items:center;font-size:11px;color:var(--ink-soft);margin-top:6px;letter-spacing:.03em}
+.demo .demo-result .score{background:var(--ink);color:var(--paper);padding:2px 7px;border-radius:2px;font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:10.5px;font-weight:600}
+.demo .demo-result .rt{color:var(--terracotta)}
+.demo .demo-empty{padding:12px 0 4px;color:var(--ink-soft);font-size:14px;font-style:italic}
+.demo .demo-error{padding:12px 0 4px;color:#a03636;font-size:14px}
+.demo details.demo-seed{margin-top:10px}
+.demo details.demo-seed summary{cursor:pointer;font-size:12.5px;color:var(--terracotta);font-weight:600;list-style:none}
+.demo details.demo-seed summary::-webkit-details-marker{display:none}
+.demo details.demo-seed summary::before{content:"→ ";font-weight:700}
+.demo details.demo-seed[open] summary::before{content:"↓ "}
+.demo details.demo-seed .seed-list{margin-top:10px;max-height:260px;overflow-y:auto;border:1px solid rgba(21,20,15,.14);border-radius:3px;padding:8px 12px;background:var(--paper)}
+.demo details.demo-seed .seed-item{font-size:13px;color:var(--ink-soft);padding:6px 0;border-top:1px solid rgba(21,20,15,.08)}
+.demo details.demo-seed .seed-item:first-child{border-top:none}
+.demo details.demo-seed .seed-loading{font-size:13px;color:var(--ink-soft);font-style:italic}
 </style></head><body>
 ${LOCKUP_SVG.replace('<svg ', '<svg class="lockup" ')}
 <span class="tag">Prototype · alpha</span>
@@ -813,6 +886,92 @@ ${LOCKUP_SVG.replace('<svg ', '<svg class="lockup" ')}
 <p class="lede">One persistent memory store that <strong>Claude, ChatGPT, Cursor, Windsurf, Kimi, Gemini</strong> — anything that speaks MCP or can call an HTTP tool — can read and write to. Write a fact in one, recall it from any other.</p>
 <p><a class="cta" href="/upgrade">See pricing →</a><a class="linkcta" href="/blog/launching-gnosem">Read the launch story →</a><a class="linkcta" href="/dashboard">Sign in →</a></p>
 <hr class="rule">
+
+<section class="demo" id="demo" aria-labelledby="demo-title">
+  <h2 id="demo-title">Try semantic search</h2>
+  <p class="demo-hint">Search a demo memory graph — no signup, no config. This is the same engine you'd wire your models into.</p>
+  <form id="demo-form" autocomplete="off" onsubmit="return false">
+    <input type="text" id="demo-q" name="query" placeholder="database preference" aria-label="Search query" maxlength="500" required>
+    <button type="submit" id="demo-btn">Search →</button>
+  </form>
+  <noscript><div class="demo-meta" style="margin-top:12px;color:#a03636">JavaScript is required for the live demo. Try <code>curl -X POST https://gnosem.dev/demo/search -H "Content-Type: application/json" -d '{"query":"database preference"}'</code> or sign up for a key below.</div></noscript>
+  <div class="demo-meta">
+    <span>Searching a demo memory graph — no signup</span>
+  </div>
+  <div class="demo-results" id="demo-results" role="region" aria-live="polite"></div>
+  <details class="demo-seed" id="demo-seed">
+    <summary>See what's in it</summary>
+    <div class="seed-list" id="demo-seed-list"><div class="seed-loading">Loading demo memories…</div></div>
+  </details>
+</section>
+<script>
+(function(){
+  var form = document.getElementById('demo-form');
+  if (!form) return;
+  var input = document.getElementById('demo-q');
+  var btn = document.getElementById('demo-btn');
+  var out = document.getElementById('demo-results');
+  var seed = document.getElementById('demo-seed');
+  var seedList = document.getElementById('demo-seed-list');
+  var examples = ['database preference','which vector store should I use','kubernetes decision','how do I feel about coffee','what did I decide about the encoder cluster','favorite editor'];
+  var i = Math.floor(Math.random()*examples.length);
+  input.placeholder = examples[i];
+  var rotate = setInterval(function(){
+    if (document.activeElement === input || input.value) { clearInterval(rotate); return; }
+    i = (i+1) % examples.length;
+    input.placeholder = examples[i];
+  }, 3200);
+  function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function renderMatches(matches){
+    if (!matches || !matches.length) {
+      out.innerHTML = '<div class="demo-empty">No matches. Try a broader term — the demo store has ~25 memories.</div>';
+      out.classList.add('active');
+      return;
+    }
+    var html = matches.slice(0,5).map(function(m){
+      var score = (typeof m.score === 'number') ? m.score.toFixed(3) : '—';
+      var tags = Array.isArray(m.tags) && m.tags.length ? m.tags.map(function(t){ return '<span class="rt">#'+esc(t)+'</span>'; }).join(' ') : '';
+      return '<div class="demo-result"><div class="rc">'+esc(m.content)+'</div><div class="rm"><span class="score">'+esc(score)+'</span>'+tags+'</div></div>';
+    }).join('');
+    out.innerHTML = html;
+    out.classList.add('active');
+  }
+  form.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    var q = input.value.trim();
+    if (!q) return;
+    btn.disabled = true;
+    var prevLabel = btn.textContent;
+    btn.textContent = 'Searching…';
+    out.classList.add('active');
+    out.innerHTML = '<div class="demo-empty">Searching…</div>';
+    fetch('/demo/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q, k: 5 }),
+    }).then(function(r){ return r.json().then(function(j){ return { ok: r.ok, body: j }; }); })
+      .then(function(res){
+        if (!res.ok) { out.innerHTML = '<div class="demo-error">'+esc(res.body && res.body.error || 'search failed')+'</div>'; return; }
+        renderMatches(res.body.matches || []);
+      })
+      .catch(function(){ out.innerHTML = '<div class="demo-error">Network error — try again.</div>'; })
+      .then(function(){ btn.disabled = false; btn.textContent = prevLabel; });
+  });
+  var seedLoaded = false;
+  seed.addEventListener('toggle', function(){
+    if (!seed.open || seedLoaded) return;
+    fetch('/demo/list').then(function(r){ return r.json(); }).then(function(j){
+      var mems = (j && j.memories) || [];
+      if (!mems.length) { seedList.innerHTML = '<div class="seed-loading">No memories yet.</div>'; return; }
+      seedList.innerHTML = mems.map(function(m){
+        var tags = Array.isArray(m.tags) && m.tags.length ? ' <span class="rt" style="color:#A2603F">'+m.tags.map(function(t){ return '#'+esc(t); }).join(' ')+'</span>' : '';
+        return '<div class="seed-item">'+esc(m.content)+tags+'</div>';
+      }).join('');
+      seedLoaded = true;
+    }).catch(function(){ seedList.innerHTML = '<div class="seed-loading">Failed to load — try again.</div>'; });
+  });
+})();
+</script>
 
 <h2>1. Sign up</h2>
 <pre>curl -sX POST https://gnosem.dev/signup \\
@@ -994,6 +1153,14 @@ Sitemap: https://gnosem.dev/sitemap.xml
     // Signup (unauthenticated)
     if (url.pathname === "/signup" && request.method === "POST") {
       return handleSignup(request, env);
+    }
+
+    // Public read-only demo store. Endpoints hard-code the demo user_id server-side.
+    if (url.pathname === "/demo/search" && request.method === "POST") {
+      return handleDemoSearch(request, env);
+    }
+    if (url.pathname === "/demo/list" && (request.method === "GET" || request.method === "HEAD")) {
+      return handleDemoList(env);
     }
 
     // Magic-link auth (no bearer required — enters authenticated state via email verification)
