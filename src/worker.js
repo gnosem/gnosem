@@ -481,36 +481,122 @@ function buildFilterSql(f) {
   return { sql: parts.length ? " AND " + parts.join(" AND ") : "", binds };
 }
 
+// Escape a raw user query for safe use inside an FTS5 MATCH string.
+// Strategy: quote the whole query, escape any embedded double-quote (FTS5 quoting
+// rule: "" inside "..." represents a literal "). We deliberately strip control
+// chars first — a stray newline or NUL causes MATCH to raise.
+function ftsEscape(q) {
+  const cleaned = String(q).replace(/[\x00-\x1f\x7f]/g, " ").trim();
+  return `"${cleaned.replace(/"/g, '""')}"`;
+}
+
+// Reciprocal Rank Fusion. Given multiple ranked id lists, produce a single blended
+// ranking where each id's score is Σ 1 / (k + rank_i). k=60 is the reference-paper
+// default (Cormack et al. 2009); it favors many-list agreement without letting any
+// one list dominate.
+const RRF_K = 60;
+function reciprocalRankFusion(lists) {
+  const scoreById = new Map();
+  for (const list of lists) {
+    list.forEach((id, i) => {
+      const rank = i + 1;
+      const prev = scoreById.get(id) || 0;
+      scoreById.set(id, prev + 1 / (RRF_K + rank));
+    });
+  }
+  return [...scoreById.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, score]) => ({ id, score }));
+}
+
 async function toolMemorySearch(env, ctx, args) {
   const userId = ctx.user_id;
   const query = String(args?.query || "").trim();
   if (!query) throw new Error("query is required");
   const k = Math.min(Math.max(Number(args?.k) || 10, 1), 50);
   const raw = args?.raw === true;
+  const modeArg = String(args?.mode || "hybrid").toLowerCase();
+  const mode = ["semantic", "keyword", "hybrid"].includes(modeArg) ? modeArg : "hybrid";
   const filters = normalizeFilters(args);
   const hasFilters = filters.tags || filters.writtenBy !== null || filters.sessionId !== null || filters.since !== null || filters.until !== null;
-  const queryVec = await embed(env, query);
-  // Vectorize filter by user_id so we never leak across users.
   // Over-fetch heavier when filters are on so post-filter has more raw hits to work with.
-  const overFetch = hasFilters ? Math.min(k * 6, 100) : k * 2;
-  const results = await env.VECTORIZE.query(queryVec, {
-    topK: overFetch,
-    filter: { user_id: userId },
-  });
-  if (!results.matches?.length) return { matches: [] };
-  const ids = results.matches.map(m => m.id);
-  const scoreById = Object.fromEntries(results.matches.map(m => [m.id, m.score]));
-  // Fetch active rows (not forgotten, not superseded) and keep result ordering by score.
-  const placeholders = ids.map(() => "?").join(",");
+  const overFetch = hasFilters ? Math.min(k * 6, 100) : k * 3;
+
+  // --- semantic hits (Vectorize) ---
+  // Skipped in pure-keyword mode; embed + query in parallel with the FTS lookup below.
+  const semanticP = mode === "keyword" ? Promise.resolve({ matches: [] })
+    : (async () => {
+        const qvec = await embed(env, query);
+        return env.VECTORIZE.query(qvec, { topK: overFetch, filter: { user_id: userId } });
+      })();
+
+  // --- keyword hits (D1 FTS5) ---
+  // Skipped in pure-semantic mode. Filters are applied straight in the FTS query for cheapness.
+  const { sql: filterSql, binds: filterBinds } = buildFilterSql(filters);
+  const keywordP = mode === "semantic" ? Promise.resolve([])
+    : (async () => {
+        try {
+          const stmt = env.DB.prepare(
+            `SELECT m.id, bm25(memories_fts) AS bscore
+             FROM memories_fts JOIN memories m ON m.id = memories_fts.id
+             WHERE memories_fts MATCH ? AND m.user_id = ? AND m.forgotten_at IS NULL AND m.superseded_by IS NULL${filterSql}
+             ORDER BY bscore ASC LIMIT ?`
+          );
+          const { results } = await stmt.bind(ftsEscape(query), userId, ...filterBinds, overFetch).all();
+          return results || [];
+        } catch {
+          // Malformed FTS query — return no keyword hits and let semantic carry the search.
+          return [];
+        }
+      })();
+
+  const [semantic, keyword] = await Promise.all([semanticP, keywordP]);
+  const semanticIds = (semantic.matches || []).map(m => m.id);
+  const semanticScoreById = Object.fromEntries((semantic.matches || []).map(m => [m.id, m.score]));
+  const keywordIds = keyword.map(r => r.id);
+
+  // Combine id lists per requested mode.
+  let orderedIds;
+  if (mode === "semantic") {
+    orderedIds = semanticIds;
+  } else if (mode === "keyword") {
+    orderedIds = keywordIds;
+  } else {
+    // hybrid: RRF over both ranked lists.
+    orderedIds = reciprocalRankFusion([semanticIds, keywordIds]).map(x => x.id);
+  }
+  if (!orderedIds.length) return { matches: [], mode };
+
+  // Hydrate from D1 (dedup + drop forgotten/superseded rows).
+  const placeholders = orderedIds.map(() => "?").join(",");
   const rows = (await env.DB.prepare(
     `SELECT id, content, content_optimized, tags, written_by, session_id, created_at
      FROM memories
      WHERE id IN (${placeholders}) AND user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL`
-  ).bind(...ids, userId).all()).results || [];
-  const filtered = hasFilters ? rows.filter(r => rowMatchesFilters(r, filters)) : rows;
-  const enriched = filtered.map(r => ({ ...shapeMemoryRow(r, { raw }), score: scoreById[r.id] ?? null }))
-    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).slice(0, k);
-  return { matches: enriched };
+  ).bind(...orderedIds, userId).all()).results || [];
+  const rowById = new Map(rows.map(r => [r.id, r]));
+
+  // Apply post-filters for the semantic branch (keyword branch already filtered at SQL).
+  // Doing this on the merged list is correct — filters are AND semantics regardless of
+  // which list surfaced the id.
+  const filteredIds = hasFilters
+    ? orderedIds.filter(id => {
+        const r = rowById.get(id);
+        return r && rowMatchesFilters(r, filters);
+      })
+    : orderedIds.filter(id => rowById.has(id));
+
+  const enriched = filteredIds.slice(0, k).map(id => {
+    const r = rowById.get(id);
+    return {
+      ...shapeMemoryRow(r, { raw }),
+      // Semantic score is preserved when available so callers can rank/inspect;
+      // in pure-keyword mode this is null (no cosine was computed).
+      score: semanticScoreById[id] ?? null,
+    };
+  });
+
+  return { matches: enriched, mode };
 }
 
 async function toolMemoryList(env, ctx, args) {
@@ -592,12 +678,13 @@ const TOOLS = [
   },
   {
     name: "memory_search",
-    description: "Semantic search across the user's memories. Returns the top-k most similar rows by cosine similarity of the embedded query and content. By default `content` is the LLM-optimized (compressed) form when available — smaller for your context window; the raw text is in `content_raw`. Pass raw:true to invert. Excludes forgotten and superseded memories. Optional filters narrow the semantic top-k after retrieval: pass tags (AND across all supplied), written_by, session_id, and/or since/until time bounds (ms epoch).",
+    description: "Search the user's memories. Default mode is 'hybrid': blends semantic (cosine over Vectorize) and keyword (BM25 over SQLite FTS5) hits via Reciprocal Rank Fusion (k=60). Semantic catches paraphrases; keyword catches exact-string hits (IDs, dates, code snippets). Pass mode:'semantic' or mode:'keyword' to run just one. Content defaults to the LLM-optimized (compressed) form when available (raw:true to invert). Excludes forgotten + superseded. Optional filters narrow after retrieval: tags (AND), written_by, session_id, and/or since/until (ms epoch).",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Natural-language search query." },
+        query: { type: "string", description: "Search query. Interpreted as natural language for semantic mode and as FTS5-safe text for keyword mode." },
         k: { type: "integer", description: "Max results (1–50). Default 10." },
+        mode: { type: "string", enum: ["semantic", "keyword", "hybrid"], description: "Retrieval mode. Default 'hybrid'." },
         raw: { type: "boolean", description: "Return original prose instead of the compressed form. Default false." },
         tags: { type: "array", items: { type: "string" }, description: "Only return memories containing ALL of these tags (AND semantics)." },
         written_by: { type: "string", description: "Only return memories with an exact written_by match (e.g. 'claude-code')." },
