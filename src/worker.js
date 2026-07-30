@@ -31,6 +31,7 @@
 
 import { LLMS_TXT } from "./llms-txt.js";
 import { MARK_SVG, WORDMARK_SVG, LOCKUP_SVG, FAVICON_SVG, OG_SVG } from "./brand.js";
+import { POSTS, blogIndexHtml, blogPostHtml } from "./blog.js";
 
 const EMBED_MODEL = "@cf/baai/bge-base-en-v1.5";
 const OPTIMIZE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
@@ -681,7 +682,7 @@ a{color:#7a2e2e}a.cta{color:#F5F1EA}
 <span class="tag">Prototype · alpha</span>
 <h1>gnosem</h1>
 <p><strong>Cross-vendor AI memory over MCP.</strong> One memory, every model. Claude, GPT, Kimi, Gemini, Cursor, Windsurf — anything that speaks MCP or can call an HTTP tool.</p>
-<a class="cta" href="/upgrade">See pricing →</a>
+<a class="cta" href="/upgrade">See pricing →</a> &nbsp; <a href="/blog/launching-gnosem" style="font-weight:600;font-size:14px">Read the launch story →</a>
 
 <h2>1. Sign up</h2>
 <pre>curl -sX POST https://gnosem.dev/signup \\
@@ -724,6 +725,16 @@ export default {
     // Landing page
     if (url.pathname === "/" && request.method === "GET") {
       return new Response(landingHtml(), { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
+    }
+
+    // Blog
+    if ((url.pathname === "/blog" || url.pathname === "/blog/") && request.method === "GET") {
+      return new Response(blogIndexHtml(), { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
+    }
+    if (url.pathname.startsWith("/blog/") && request.method === "GET") {
+      const slug = url.pathname.slice("/blog/".length).replace(/\/$/, "");
+      const post = POSTS.find(p => p.slug === slug);
+      if (post) return new Response(blogPostHtml(post), { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
     }
 
     // .well-known/mcp/server-card.json — for MCP registries that auto-scan servers (Smithery, Glama).
@@ -798,16 +809,26 @@ Sitemap: https://gnosem.dev/sitemap.xml
       );
     }
 
-    // Sitemap
+    // Sitemap — includes all posts so Google discovers new content the first crawl after publish.
     if (url.pathname === "/sitemap.xml" && request.method === "GET") {
-      const lastmod = new Date().toISOString().slice(0, 10);
+      const today = new Date().toISOString().slice(0, 10);
+      const staticUrls = [
+        { loc: "https://gnosem.dev/", lastmod: today, priority: "1.0", changefreq: "weekly" },
+        { loc: "https://gnosem.dev/upgrade", lastmod: today, priority: "0.9", changefreq: "monthly" },
+        { loc: "https://gnosem.dev/blog/", lastmod: POSTS[0]?.published || today, priority: "0.8", changefreq: "weekly" },
+        { loc: "https://gnosem.dev/llms.txt", lastmod: today, priority: "0.6", changefreq: "weekly" },
+      ];
+      const postUrls = POSTS.map(p => ({
+        loc: `https://gnosem.dev/blog/${p.slug}`,
+        lastmod: p.updated || p.published,
+        priority: "0.7",
+        changefreq: "monthly",
+      }));
+      const urls = [...staticUrls, ...postUrls]
+        .map(u => `  <url><loc>${u.loc}</loc><lastmod>${u.lastmod}</lastmod><changefreq>${u.changefreq}</changefreq><priority>${u.priority}</priority></url>`)
+        .join("\n");
       return new Response(
-        `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://gnosem.dev/</loc><lastmod>${lastmod}</lastmod><priority>1.0</priority></url>
-  <url><loc>https://gnosem.dev/upgrade</loc><lastmod>${lastmod}</lastmod><priority>0.8</priority></url>
-  <url><loc>https://gnosem.dev/llms.txt</loc><lastmod>${lastmod}</lastmod><priority>0.6</priority></url>
-</urlset>`,
+        `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>`,
         { headers: { "Content-Type": "application/xml; charset=utf-8", ...CORS } }
       );
     }
