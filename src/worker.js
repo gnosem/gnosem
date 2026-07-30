@@ -127,6 +127,33 @@ async function authenticate(request, env) {
   return null;
 }
 
+// ------------- rate limiting -------------
+//
+// Sliding-window per-key counter backed by D1. Two D1 round-trips worst case:
+// a SELECT to read the current window + one INSERT/UPDATE to advance it.
+// Cheap at prototype scale; graduate to Cloudflare's native ratelimit binding
+// (period=60 max) or Durable Objects if per-request D1 writes ever become the
+// bottleneck.
+
+async function checkRateLimit(env, key, limit, windowMs) {
+  const now = Date.now();
+  const windowFloor = now - windowMs;
+  const row = await env.DB.prepare("SELECT count, window_start FROM rate_limits WHERE key = ?").bind(key).first();
+  if (!row || row.window_start < windowFloor) {
+    // Fresh window (or first ever hit)
+    await env.DB.prepare(
+      "INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?) " +
+      "ON CONFLICT(key) DO UPDATE SET count = 1, window_start = excluded.window_start"
+    ).bind(key, now).run();
+    return { allowed: true, remaining: limit - 1 };
+  }
+  if (row.count >= limit) {
+    return { allowed: false, retryAfter: Math.ceil((row.window_start + windowMs - now) / 1000) };
+  }
+  await env.DB.prepare("UPDATE rate_limits SET count = count + 1 WHERE key = ?").bind(key).run();
+  return { allowed: true, remaining: limit - row.count - 1 };
+}
+
 // ------------- magic-link auth -------------
 //
 // Passwordless email login for the dashboard. Two secrets required:
@@ -1159,8 +1186,11 @@ Sitemap: https://gnosem.dev/sitemap.xml
       );
     }
 
-    // Signup (unauthenticated)
+    // Signup (unauthenticated) — rate-limited by IP: 5 per hour.
     if (url.pathname === "/signup" && request.method === "POST") {
+      const ip = request.headers.get("cf-connecting-ip") || "unknown";
+      const rl = await checkRateLimit(env, "signup:" + ip, 5, 3600 * 1000);
+      if (!rl.allowed) return json({ error: "too many signups from this address; try again in ~" + Math.ceil(rl.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rl.retryAfter) });
       return handleSignup(request, env);
     }
 
@@ -1173,7 +1203,11 @@ Sitemap: https://gnosem.dev/sitemap.xml
     }
 
     // Magic-link auth (no bearer required — enters authenticated state via email verification)
+    // Rate-limited by IP: 10 per 15 minutes.
     if (url.pathname === "/auth/request" && request.method === "POST") {
+      const ip = request.headers.get("cf-connecting-ip") || "unknown";
+      const rl = await checkRateLimit(env, "auth:" + ip, 10, 900 * 1000);
+      if (!rl.allowed) return json({ error: "too many sign-in requests from this address; try again in ~" + Math.ceil(rl.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rl.retryAfter) });
       if (!env.MAGIC_LINK_SECRET) return json({ error: "email login not configured on this deployment" }, 503);
       let body; try { body = await request.json(); } catch { body = {}; }
       const email = String(body.email || "").trim().toLowerCase().slice(0, 254);
