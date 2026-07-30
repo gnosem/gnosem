@@ -1,0 +1,36 @@
+{
+  "name": "@gnosem/projmap",
+  "version": "0.1.0",
+  "description": "projmap — where your projects live, so every AI you use can find them. Indexes source project paths into Gnosem so any MCP client (Claude, ChatGPT, Cursor) can query for them.",
+  "keywords": [
+    "gnosem",
+    "mcp",
+    "ai-memory",
+    "projects",
+    "index",
+    "cli",
+    "cross-vendor",
+    "claude",
+    "cursor",
+    "chatgpt"
+  ],
+  "homepage": "https://gnosem.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gnosem/gnosem",
+    "directory": "projmap"
+  },
+  "bugs": "https://github.com/gnosem/gnosem/issues",
+  "license": "MIT",
+  "author": "CUETV LLC",
+  "bin": {
+    "projmap": "bin/projmap.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
