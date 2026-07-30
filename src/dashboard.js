@@ -52,7 +52,16 @@ h2{font-family:"Newsreader",Georgia,serif;font-size:20px;margin:32px 0 10px;font
 .btn.ghost:hover{background:none;color:var(--terracotta)}
 .small{font-size:12.5px;color:var(--ink-soft)}
 .hidden{display:none}
-input[type=text],input[type=password]{font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--ink);border-radius:3px;background:#fff;width:100%;color:var(--ink);font-family:ui-monospace,SF Mono,Consolas,monospace}
+input[type=text],input[type=password],input[type=date],textarea{font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--ink);border-radius:3px;background:#fff;width:100%;color:var(--ink);font-family:ui-monospace,SF Mono,Consolas,monospace}
+textarea{resize:vertical;min-height:96px;line-height:1.5}
+.field{margin:0 0 12px}
+.field label{display:block;font-size:12.5px;color:var(--ink-soft);letter-spacing:.02em;margin-bottom:4px}
+.field .hint{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:4px;font-size:12px;color:var(--ink-soft)}
+.field .hint.warn{color:#8a2020}
+.check{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--ink-soft);margin:8px 0 12px;cursor:pointer}
+.check input{width:auto;margin:0}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 18px;border-radius:3px;font-size:13.5px;letter-spacing:.02em;box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:100;opacity:0;transition:opacity .18s ease}
+.toast.show{opacity:1}
 .callout{background:#fff;border-left:3px solid var(--terracotta);padding:12px 14px;margin:0 0 14px;font-size:14px}
 pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;background:var(--ink);color:var(--paper);padding:10px 12px;border-radius:3px;overflow-x:auto;margin:8px 0 0}
 .err{color:#8a2020;font-size:14px;margin-top:8px}
@@ -81,6 +90,26 @@ pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;backgroun
     <div class="row"><span class="k">Memories</span><span class="v" id="mem-count">—</span></div>
     <div class="bar"><i id="mem-bar" style="width:0%"></i></div>
     <p class="small" id="mem-limit-note" style="margin-top:8px"></p>
+  </div>
+
+  <h2>Add a memory</h2>
+  <div class="card">
+    <div class="field">
+      <label for="add-content">Content</label>
+      <textarea id="add-content" maxlength="8000" placeholder="A fact, preference, decision, or note to remember…"></textarea>
+      <div class="hint"><span id="add-count">0 / 8000</span><span>Long entries (&gt;400 chars) are auto-compressed for LLM reading — the raw text is preserved.</span></div>
+    </div>
+    <div class="field">
+      <label for="add-tags">Tags <span class="small" style="font-weight:400">(comma-separated, optional)</span></label>
+      <input id="add-tags" type="text" placeholder="preference, stack, personal">
+    </div>
+    <div class="field">
+      <label for="add-written-by">Written by</label>
+      <input id="add-written-by" type="text" value="dashboard">
+    </div>
+    <label class="check"><input type="checkbox" id="add-no-optimize"> Skip AI compression (preserve exact phrasing)</label>
+    <p><button class="btn" id="add-submit">Save memory</button></p>
+    <p id="add-err" class="err hidden"></p>
   </div>
 
   <h2>Recent memories</h2>
@@ -171,15 +200,7 @@ async function loadMemories() {
     list.innerHTML = '<p class="small">No memories yet. Write your first from any MCP client.</p>';
     return;
   }
-  list.innerHTML = items.map(m => {
-    const tags = (m.tags || []).map(t => "<span>" + escapeHtml(t) + "</span>").join("");
-    return '<div class="mem">'
-      + '<p class="meta">' + fmtDate(m.created_at) + (m.written_by ? " · " + escapeHtml(m.written_by) : "") + '</p>'
-      + '<p class="content">' + escapeHtml(m.content) + '</p>'
-      + (tags ? '<p class="tags">' + tags + '</p>' : '')
-      + '<p class="actions"><button class="btn ghost" data-forget="' + m.id + '">Forget</button></p>'
-      + '</div>';
-  }).join("");
+  list.innerHTML = items.map(renderMemoryCard).join("");
   list.querySelectorAll("[data-forget]").forEach(btn => btn.addEventListener("click", () => forgetMemory(btn.dataset.forget)));
 }
 
@@ -205,6 +226,91 @@ async function rotateKey() {
     $("new-key").textContent = j.api_key;
     show($("rotate-result"));
   }
+}
+
+function showToast(msg) {
+  let t = document.querySelector(".toast");
+  if (!t) { t = document.createElement("div"); t.className = "toast"; document.body.appendChild(t); }
+  t.textContent = msg;
+  requestAnimationFrame(() => t.classList.add("show"));
+  clearTimeout(showToast._h);
+  showToast._h = setTimeout(() => t.classList.remove("show"), 2000);
+}
+
+function renderMemoryCard(m) {
+  const tags = (m.tags || []).map(t => "<span>" + escapeHtml(t) + "</span>").join("");
+  return '<div class="mem">'
+    + '<p class="meta">' + fmtDate(m.created_at) + (m.written_by ? " · " + escapeHtml(m.written_by) : "") + '</p>'
+    + '<p class="content">' + escapeHtml(m.content) + '</p>'
+    + (tags ? '<p class="tags">' + tags + '</p>' : '')
+    + '<p class="actions"><button class="btn ghost" data-forget="' + m.id + '">Forget</button></p>'
+    + '</div>';
+}
+
+async function addMemory() {
+  const contentEl = $("add-content");
+  const tagsEl = $("add-tags");
+  const writtenByEl = $("add-written-by");
+  const noOptEl = $("add-no-optimize");
+  const errEl = $("add-err");
+  const btn = $("add-submit");
+  hide(errEl);
+  const content = contentEl.value.trim();
+  if (!content) { errEl.textContent = "Content is required."; show(errEl); return; }
+  const tags = tagsEl.value.split(",").map(s => s.trim()).filter(Boolean);
+  const written_by = writtenByEl.value.trim() || "dashboard";
+  const args = { content, written_by };
+  if (tags.length) args.tags = tags;
+  if (noOptEl.checked) args.no_optimize = true;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Saving…";
+  try {
+    const r = await authedFetch("/mcp", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "memory_write", arguments: args } }),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || "Save failed");
+    const written = j?.result?.structuredContent;
+    contentEl.value = ""; tagsEl.value = ""; noOptEl.checked = false;
+    updateAddCount();
+    showToast("Saved");
+    // Optimistic prepend so the user sees it without waiting for a full refetch.
+    if (written?.id) {
+      const list = $("mem-list");
+      const newRow = {
+        id: written.id,
+        content: written.content || content,
+        tags,
+        written_by,
+        created_at: written.created_at || Date.now(),
+      };
+      const empty = list.querySelector("p.small");
+      if (empty) list.innerHTML = "";
+      list.insertAdjacentHTML("afterbegin", renderMemoryCard(newRow));
+      list.querySelectorAll("[data-forget]").forEach(b => {
+        b.replaceWith(b.cloneNode(true));
+      });
+      list.querySelectorAll("[data-forget]").forEach(b => b.addEventListener("click", () => forgetMemory(b.dataset.forget)));
+    }
+    loadAccount();
+  } catch (e) {
+    errEl.textContent = e.message || "Save failed";
+    show(errEl);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+function updateAddCount() {
+  const el = $("add-content");
+  const c = $("add-count");
+  const n = el.value.length;
+  c.textContent = n + " / 8000";
+  const hint = c.parentElement;
+  if (n > 7500) hint.classList.add("warn"); else hint.classList.remove("warn");
 }
 
 async function boot() {
@@ -246,6 +352,10 @@ $("signout-btn").addEventListener("click", async () => {
   location.reload();
 });
 $("rotate-btn").addEventListener("click", rotateKey);
+
+$("add-submit").addEventListener("click", addMemory);
+$("add-content").addEventListener("input", updateAddCount);
+updateAddCount();
 
 $("export-btn").addEventListener("click", async () => {
   const btn = $("export-btn");
