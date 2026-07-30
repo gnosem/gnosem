@@ -31,6 +31,89 @@ a.cta{color:var(--paper)}
 
 export const POSTS = [
   {
+    slug: "introducing-projmap",
+    title: "Introducing projmap — where your code lives, so every AI you use can find it",
+    subtitle: "A companion CLI that walks your filesystem, discovers project roots, and writes them to Gnosem as searchable memories. Backed by gnosem; usable from any MCP client.",
+    published: "2026-07-30",
+    readingMinutes: 5,
+    description: "projmap is a zero-dep npm CLI that indexes where your source projects live and stores them in your Gnosem account. Any AI you use — Claude, ChatGPT, Cursor, Windsurf — can then ask 'where is X?' and get an answer.",
+    keywords: "projmap CLI, project path index for AI, cross-vendor project locations, gnosem companion tool, where does my code live, AI project navigation",
+    bodyHtml: `
+<p>If you use more than one AI assistant, you've discovered a small friction that adds up: every fresh session, every switch between clients, none of them know where your code lives. Claude asks you to point at the repo. Cursor opens whatever project happens to be in view. ChatGPT starts from a blank page. A file named <code>CLAUDE.md</code> at the root of your workspace can prime Claude sessions with paths, but that document doesn't cross into ChatGPT or Cursor or Kimi.</p>
+
+<p><a href="https://github.com/gnosem/gnosem/tree/main/projmap"><strong>projmap</strong></a> is a small companion CLI to <a href="/">Gnosem</a> that fixes this. It walks your filesystem, discovers your project roots by looking for standard signals, and writes one memory per project to your Gnosem account tagged <code>project-path</code>. Because Gnosem is already the cross-vendor memory layer, every MCP client you use can find the paths on the next semantic search.</p>
+
+<h2 id="install-and-scan">Install and scan</h2>
+
+<pre><code>npx @gnosem/projmap scan ~/code</code></pre>
+
+<p>projmap walks the tree looking for any of these signals at each directory: <code>.git/</code>, <code>package.json</code>, <code>wrangler.jsonc</code>, <code>Cargo.toml</code>, <code>pyproject.toml</code>, <code>go.mod</code>, <code>CLAUDE.md</code>. When a signal matches, that directory is treated as a project root and the walker stops descending (so monorepo sub-packages don't get double-indexed).</p>
+
+<p>For each project found, projmap writes a memory to Gnosem like:</p>
+
+<pre><code>PROJECT=calcuttacalc | PATH=/Users/zac/CueTV/projects/CalcuttaCalc.com | KIND=worker | DESCRIPTION=Calcutta scorekeeping for golf tournaments and rodeos</code></pre>
+
+<p>Tagged <code>project-path</code>. Compressed automatically per Gnosem's <a href="/blog/ai-optimized-memory-storage">on-write compression</a>.</p>
+
+<h2 id="the-cross-vendor-lookup">The cross-vendor lookup</h2>
+
+<p>Once your projects are indexed, any AI you use with Gnosem installed can find them via <code>memory_search</code>:</p>
+
+<p><strong>Claude Desktop:</strong> "Where does calcuttacalc live?" → Claude calls <code>memory_search("calcuttacalc")</code> → gets back the path → offers to open it.</p>
+
+<p><strong>ChatGPT (via Custom GPT Action):</strong> Same query, same tool, same answer.</p>
+
+<p><strong>Cursor / Windsurf / Zed:</strong> Same story. The MCP tool call is identical across clients because that's what MCP is for.</p>
+
+<p>Semantic search means you don't need to remember the exact project name. Queries like "the golf scoring thing" or "the react app for splitting golf trip costs" will hit the right memory because Gnosem embeds meaning, not keywords.</p>
+
+<h2 id="commands">All commands</h2>
+
+<ul>
+<li><code>projmap scan [ROOT...]</code> — walk one or more trees (default: <code>~</code>, capped depth 5), discover projects, write to Gnosem. Idempotent — rescan calls <code>memory_supersede</code> when a project's metadata changed and skips otherwise.</li>
+<li><code>projmap list</code> — pull all <code>project-path</code>-tagged memories and print aligned columns.</li>
+<li><code>projmap find QUERY</code> — semantic search filtered to projects. Top 10 results.</li>
+<li><code>projmap add NAME PATH [DESCRIPTION]</code> — manually register a project the scanner missed.</li>
+<li><code>projmap remove NAME</code> — soft-delete via <code>memory_forget</code>.</li>
+</ul>
+
+<h2 id="auth">Auth</h2>
+
+<p>projmap needs a Gnosem API key. In order of precedence:</p>
+
+<ol>
+<li><code>GNOSEM_API_KEY</code> env var</li>
+<li><code>~/.projmap/config.json</code> (0600 perms)</li>
+<li>Interactive prompt on first run, then persisted to the config file</li>
+</ol>
+
+<p>The key is never logged. If you rotate keys via the <a href="/dashboard">Gnosem dashboard</a>, update <code>~/.projmap/config.json</code> or re-run with <code>GNOSEM_API_KEY=… projmap …</code>.</p>
+
+<h2 id="design-choices">A few design choices worth calling out</h2>
+
+<p><strong>Dedup by absolute real-path, not by name.</strong> Names collide across roots (three <code>utils</code> directories); paths are stable across renames.</p>
+
+<p><strong>Symlinks are never followed.</strong> The walker uses <code>lstatSync</code> plus a Set of <code>realpathSync</code> results for cycle protection.</p>
+
+<p><strong>Hard-skip list for common noise directories:</strong> <code>node_modules</code>, <code>.venv</code>, <code>.wrangler</code>, <code>Library</code>, <code>Applications</code>, <code>.cache</code>, plus anything projmap can identify as belonging to another already-captured project.</p>
+
+<p><strong>Zero runtime dependencies.</strong> Node builtins + <code>fetch</code>. The whole CLI is one file; you can audit it in a coffee break.</p>
+
+<h2 id="why-not-a-standalone-database">Why not a standalone database?</h2>
+
+<p>Two reasons projmap uses Gnosem as its backend rather than a local SQLite:</p>
+
+<ol>
+<li>Cross-vendor is free. If projmap stored paths in its own database, every AI client would need its own bridge to read them. Storing in Gnosem means every MCP client already has the reader for free.</li>
+<li>Multi-machine sync is free. If you scan projects on your laptop and later ask your desktop's AI where a project lives, the answer is already there because Gnosem's storage is hosted.</li>
+</ol>
+
+<p>Cost: projmap writes count against your Gnosem memory quota (200 on the free tier — plenty for a personal project index). If you have 500+ projects and are on the free tier, upgrade or run <code>projmap remove</code> on the ones you don't care about.</p>
+
+<p>Source: <a href="https://github.com/gnosem/gnosem/tree/main/projmap">github.com/gnosem/gnosem/projmap</a>. npm: <code>@gnosem/projmap</code>. MIT.</p>
+`,
+  },
+  {
     slug: "security-posture",
     title: "Gnosem's security posture — what we do to keep your memory yours",
     subtitle: "Two-layer per-user isolation, no plaintext key storage, magic links that never leak, and the specific bug we shipped and patched to earn that guarantee.",
