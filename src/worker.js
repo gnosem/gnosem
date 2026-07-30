@@ -77,22 +77,9 @@ async function generateApiKey() {
   return "gn_" + Array.from(buf).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Look up + auth: returns { user_id, plan, subscription_status } or null.
-async function authenticate(request, env) {
-  const authz = request.headers.get("Authorization") || "";
-  const m = /^Bearer\s+(gn_[a-f0-9]{32})$/i.exec(authz);
-  if (!m) return null;
-  const keyHash = await sha256Hex(m[1]);
-  const row = await env.DB.prepare(
-    `SELECT k.user_id, u.plan, u.subscription_status, u.subscription_period_end
-     FROM api_keys k JOIN users u ON u.id = k.user_id
-     WHERE k.key_hash = ? AND k.revoked_at IS NULL`
-  ).bind(keyHash).first();
-  if (!row) return null;
-  env.DB.prepare("UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?")
-    .bind(Date.now(), keyHash).run().catch(() => {});
-  // Auto-downgrade if subscription lapsed past grace (7 days).
-  // Exception: 'internal_founder' is granted permanently (no subscription_id to expire).
+// Wrap a user row into the same context shape the rest of the code expects.
+// Applies the pro/free downgrade + internal_founder exception.
+function contextFromUserRow(row) {
   const graceMs = 7 * 24 * 3600 * 1000;
   const stillPaid = row.plan === "pro" && (
     row.subscription_status === "active" ||
@@ -100,7 +87,115 @@ async function authenticate(request, env) {
     row.subscription_status === "internal_founder" ||
     (row.subscription_period_end && Date.now() < row.subscription_period_end + graceMs)
   );
-  return { user_id: row.user_id, plan: stillPaid ? "pro" : "free", subscription_status: row.subscription_status };
+  return { user_id: row.user_id || row.id, plan: stillPaid ? "pro" : "free", subscription_status: row.subscription_status };
+}
+
+// Look up + auth: returns { user_id, plan, subscription_status } or null.
+// Accepts either an Authorization: Bearer gn_… header (for MCP clients / API) or a
+// gnosem_session HMAC-signed cookie (for the dashboard after magic-link login).
+async function authenticate(request, env) {
+  const authz = request.headers.get("Authorization") || "";
+  const m = /^Bearer\s+(gn_[a-f0-9]{32})$/i.exec(authz);
+  if (m) {
+    const keyHash = await sha256Hex(m[1]);
+    const row = await env.DB.prepare(
+      `SELECT k.user_id, u.plan, u.subscription_status, u.subscription_period_end
+       FROM api_keys k JOIN users u ON u.id = k.user_id
+       WHERE k.key_hash = ? AND k.revoked_at IS NULL`
+    ).bind(keyHash).first();
+    if (!row) return null;
+    env.DB.prepare("UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?")
+      .bind(Date.now(), keyHash).run().catch(() => {});
+    return contextFromUserRow(row);
+  }
+  // Cookie path
+  const cookie = request.headers.get("Cookie") || "";
+  const sess = /(?:^|;\s*)gnosem_session=([^;]+)/.exec(cookie);
+  if (sess && env.MAGIC_LINK_SECRET) {
+    const userId = await verifySessionToken(sess[1], env.MAGIC_LINK_SECRET, 30 * 24 * 3600 * 1000);
+    if (userId) {
+      const row = await env.DB.prepare("SELECT id, plan, subscription_status, subscription_period_end FROM users WHERE id = ?").bind(userId).first();
+      if (row) return contextFromUserRow(row);
+    }
+  }
+  return null;
+}
+
+// ------------- magic-link auth -------------
+//
+// Passwordless email login for the dashboard. Two secrets required:
+//   - MAGIC_LINK_SECRET  (HMAC signing key for tokens + session cookies)
+//   - RESEND_API_KEY     (optional — if unset, /auth/request returns the URL inline instead of emailing)
+//
+// Tokens: "<payloadB64>.<sigB64>", where payload is JSON {u: user_id, e: expires_at_ms}
+// and sig is HMAC-SHA256(payload, secret). Constant-time compared on verify.
+
+const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const b64urlDecode = (s) => {
+  const pad = "=".repeat((4 - s.length % 4) % 4);
+  const bin = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(bin, c => c.charCodeAt(0));
+};
+
+async function hmacSign(payload, secret) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return b64url(sig);
+}
+
+// Constant-time string comparison
+function ctEq(a, b) {
+  if (a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+
+// Issue a magic-link token (short-lived; 15 min default).
+async function issueMagicToken(userId, secret, ttlMs = 15 * 60 * 1000) {
+  const payload = JSON.stringify({ u: userId, e: Date.now() + ttlMs });
+  const payloadB64 = b64url(new TextEncoder().encode(payload));
+  const sig = await hmacSign(payloadB64, secret);
+  return `${payloadB64}.${sig}`;
+}
+
+async function verifyMagicToken(token, secret) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 2) return null;
+  const [payloadB64, sig] = parts;
+  const expected = await hmacSign(payloadB64, secret);
+  if (!ctEq(sig, expected)) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(payloadB64)));
+    if (!payload.u || !payload.e) return null;
+    if (Date.now() > payload.e) return null;
+    return payload.u;
+  } catch { return null; }
+}
+
+// Session tokens are similar but longer-lived. Same format so verify shares a codepath.
+async function issueSessionToken(userId, secret, ttlMs = 30 * 24 * 3600 * 1000) {
+  return issueMagicToken(userId, secret, ttlMs);
+}
+async function verifySessionToken(token, secret, maxAgeMs) {
+  return verifyMagicToken(token, secret);
+}
+
+async function sendMagicLinkEmail(env, to, link) {
+  if (!env.RESEND_API_KEY) return { ok: false, reason: "email_not_configured" };
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from: "Gnosem <hello@gnosem.dev>",
+      to: [to],
+      subject: "Your Gnosem sign-in link",
+      text: `Click to sign in to your Gnosem dashboard:\n\n${link}\n\nThe link expires in 15 minutes. If you didn't request this, you can ignore this email.\n\n— Gnosem (a CUETV LLC product)`,
+      html: `<p>Click to sign in to your Gnosem dashboard:</p><p><a href="${link}">${link}</a></p><p>The link expires in 15 minutes. If you didn't request this, you can ignore this email.</p><p>— Gnosem (a CUETV LLC product)</p>`,
+    }),
+  });
+  if (!r.ok) return { ok: false, reason: "send_failed", status: r.status, body: await r.text() };
+  return { ok: true };
 }
 
 // ------------- embedding -------------
@@ -896,6 +991,42 @@ Sitemap: https://gnosem.dev/sitemap.xml
     // Signup (unauthenticated)
     if (url.pathname === "/signup" && request.method === "POST") {
       return handleSignup(request, env);
+    }
+
+    // Magic-link auth (no bearer required — enters authenticated state via email verification)
+    if (url.pathname === "/auth/request" && request.method === "POST") {
+      if (!env.MAGIC_LINK_SECRET) return json({ error: "email login not configured on this deployment" }, 503);
+      let body; try { body = await request.json(); } catch { body = {}; }
+      const email = String(body.email || "").trim().toLowerCase().slice(0, 254);
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return json({ error: "valid email required" }, 400);
+      const user = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
+      // Same response either way so we don't leak whether the email is registered.
+      if (!user) return json({ ok: true, note: "if that email is registered, a link is on the way" });
+      const token = await issueMagicToken(user.id, env.MAGIC_LINK_SECRET);
+      const link = `${url.origin}/auth/verify?token=${encodeURIComponent(token)}`;
+      const send = await sendMagicLinkEmail(env, email, link);
+      if (!send.ok && send.reason === "email_not_configured") {
+        // Fallback for setup/testing before Resend is wired: return the link inline.
+        return json({ ok: true, note: "RESEND_API_KEY not set; returning link directly for testing (would email in prod)", link });
+      }
+      if (!send.ok) return json({ error: "failed to send email; try again later", detail: send }, 502);
+      return json({ ok: true, note: "check your email for a sign-in link (valid 15 min)" });
+    }
+    if (url.pathname === "/auth/verify" && request.method === "GET") {
+      if (!env.MAGIC_LINK_SECRET) return json({ error: "email login not configured on this deployment" }, 503);
+      const token = url.searchParams.get("token") || "";
+      const userId = await verifyMagicToken(token, env.MAGIC_LINK_SECRET);
+      if (!userId) return new Response("Sign-in link is invalid or expired. Request a new one from the dashboard.", { status: 400, headers: { "Content-Type": "text/plain", ...CORS } });
+      const session = await issueSessionToken(userId, env.MAGIC_LINK_SECRET);
+      // Set a 30-day HttpOnly Secure cookie and redirect to the dashboard.
+      const cookie = `gnosem_session=${session}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${30 * 24 * 3600}`;
+      return new Response(null, { status: 302, headers: { "Location": "/dashboard", "Set-Cookie": cookie, ...CORS } });
+    }
+    if (url.pathname === "/auth/logout" && request.method === "POST") {
+      return new Response(null, {
+        status: 204,
+        headers: { "Set-Cookie": "gnosem_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0", ...CORS },
+      });
     }
 
     // Stripe redirect after successful checkout (no auth — verifies via Stripe API)

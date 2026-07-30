@@ -62,11 +62,19 @@ pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;backgroun
 
 <div id="signin" class="hidden">
   <h1>Sign in</h1>
-  <p class="small">Paste your Gnosem API key to view your account and memories. Your key stays in this browser only — it is not sent anywhere except gnosem.dev.</p>
-  <p style="margin-top:16px"><input id="key-input" type="password" placeholder="gn_…" autocomplete="off" spellcheck="false"></p>
-  <p><button class="btn" id="signin-btn">Sign in</button></p>
+  <p class="small">Two ways to sign in — email link (if your account has one on file) or paste your API key directly.</p>
+
+  <h2 style="margin-top:20px">Email me a sign-in link</h2>
+  <p><input id="email-input" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false"></p>
+  <p><button class="btn" id="email-btn">Send sign-in link</button></p>
+  <p id="email-msg" class="small hidden"></p>
+
+  <h2 style="margin-top:32px">Or paste your API key</h2>
+  <p><input id="key-input" type="password" placeholder="gn_…" autocomplete="off" spellcheck="false"></p>
+  <p><button class="btn" id="signin-btn">Sign in with key</button></p>
   <p id="signin-err" class="err hidden"></p>
-  <p class="small" style="margin-top:24px">No key? <a href="/">Sign up on the homepage</a>.</p>
+
+  <p class="small" style="margin-top:32px">No account? <a href="/">Sign up on the homepage</a>.</p>
 </div>
 
 <div id="app" class="hidden">
@@ -125,10 +133,9 @@ function clearKey() { localStorage.removeItem(KEY_LS); }
 
 async function authedFetch(path, opts = {}) {
   const key = localStorage.getItem(KEY_LS);
-  const r = await fetch(path, {
-    ...opts,
-    headers: { ...(opts.headers || {}), "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-  });
+  const headers = { ...(opts.headers || {}), "Content-Type": "application/json" };
+  if (key) headers["Authorization"] = "Bearer " + key;
+  const r = await fetch(path, { ...opts, headers, credentials: "include" });
   if (r.status === 401) {
     clearKey();
     location.reload();
@@ -201,15 +208,21 @@ async function rotateKey() {
 }
 
 async function boot() {
-  const key = getKey();
-  if (!key) { show($("signin")); return; }
+  getKey(); // consume ?key= from URL if present
+  // Try /me — succeeds if we have either a valid session cookie or a Bearer key
   try {
-    await loadAccount();
-    show($("app"));
-    loadMemories();
-  } catch (e) {
-    show($("signin"));
-  }
+    const r = await fetch("/me", {
+      credentials: "include",
+      headers: localStorage.getItem(KEY_LS) ? { "Authorization": "Bearer " + localStorage.getItem(KEY_LS) } : {},
+    });
+    if (r.ok) {
+      await loadAccount();
+      show($("app"));
+      loadMemories();
+      return;
+    }
+  } catch {}
+  show($("signin"));
 }
 
 $("signin-btn").addEventListener("click", () => {
@@ -221,7 +234,38 @@ $("signin-btn").addEventListener("click", () => {
   location.reload();
 });
 $("key-input")?.addEventListener("keydown", (e) => { if (e.key === "Enter") $("signin-btn").click(); });
-$("signout-btn").addEventListener("click", () => { clearKey(); location.reload(); });
+
+$("email-btn").addEventListener("click", async () => {
+  const email = $("email-input").value.trim();
+  const msg = $("email-msg");
+  msg.className = "small";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { msg.textContent = "Please enter a valid email."; show(msg); return; }
+  $("email-btn").disabled = true;
+  msg.textContent = "Sending…"; show(msg);
+  try {
+    const r = await fetch("/auth/request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+    const j = await r.json();
+    if (j.link) {
+      // Testing fallback (RESEND_API_KEY not set on server)
+      msg.innerHTML = 'Email not yet wired on this deployment — <a href="' + escapeHtml(j.link) + '">click here to sign in</a> (would be emailed in production).';
+    } else if (r.ok) {
+      msg.textContent = j.note || "Check your email for the sign-in link.";
+    } else {
+      msg.textContent = j.error || "Something went wrong.";
+    }
+  } catch (e) {
+    msg.textContent = "Network error. Try again.";
+  } finally {
+    $("email-btn").disabled = false;
+  }
+});
+$("email-input")?.addEventListener("keydown", (e) => { if (e.key === "Enter") $("email-btn").click(); });
+
+$("signout-btn").addEventListener("click", async () => {
+  clearKey();
+  try { await fetch("/auth/logout", { method: "POST", credentials: "include" }); } catch {}
+  location.reload();
+});
 $("rotate-btn").addEventListener("click", rotateKey);
 
 boot();
