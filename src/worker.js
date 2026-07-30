@@ -158,8 +158,10 @@ async function checkRateLimit(env, key, limit, windowMs) {
 //
 // Passwordless email login for the dashboard. Two secrets required:
 //   - MAGIC_LINK_SECRET  (HMAC signing key for tokens + session cookies)
-//   - BREVO_API_KEY      (required to actually email — if unset, /auth/request accepts the request
+//   - ZEPTOMAIL_API_KEY  (required to actually email — if unset, /auth/request accepts the request
 //                         and sends nothing. It never returns the link to the caller.)
+//                         Store the token exactly as ZeptoMail issues it, including the
+//                         literal "Zoho-enczapikey " prefix — it IS the Authorization header.
 //
 // Tokens: "<payloadB64>.<sigB64>", where payload is JSON {u: user_id, e: expires_at_ms}
 // and sig is HMAC-SHA256(payload, secret). Constant-time compared on verify.
@@ -215,20 +217,36 @@ async function verifySessionToken(token, secret, maxAgeMs) {
   return verifyMagicToken(token, secret);
 }
 
+// ZeptoMail. Note the Authorization header: the token already carries its own scheme
+// prefix ("Zoho-enczapikey ..."), so it is passed through verbatim — no "Bearer", no
+// "Basic". Prefixing it would produce a 401 that looks like a bad key.
 async function sendMagicLinkEmail(env, to, link) {
-  if (!env.BREVO_API_KEY) return { ok: false, reason: "email_not_configured" };
-  const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+  if (!env.ZEPTOMAIL_API_KEY) return { ok: false, reason: "email_not_configured" };
+  // Defense in depth: strip every control character + surrounding whitespace, then ensure the
+  // required "Zoho-enczapikey " prefix. fetch() throws "Invalid header value" on any newline,
+  // and Zoho's API returns 401 on missing prefix — we've hit both, so guard both.
+  let authHeader = env.ZEPTOMAIL_API_KEY.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  if (!authHeader.startsWith("Zoho-enczapikey ")) authHeader = "Zoho-enczapikey " + authHeader;
+  const r = await fetch("https://api.zeptomail.com/v1.1/email", {
     method: "POST",
-    headers: { "api-key": env.BREVO_API_KEY, "Content-Type": "application/json", "Accept": "application/json" },
+    headers: {
+      "Authorization": authHeader,
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    },
     body: JSON.stringify({
-      sender: { name: "Gnosem", email: "hello@gnosem.dev" },
-      to: [{ email: to }],
+      from: { address: "hello@gnosem.dev", name: "Gnosem" },
+      to: [{ email_address: { address: to } }],
       subject: "Your Gnosem sign-in link",
-      textContent: `Click to sign in to your Gnosem dashboard:\n\n${link}\n\nThe link expires in 15 minutes. If you didn't request this, you can ignore this email.\n\n— Gnosem (a CUETV LLC product)`,
-      htmlContent: `<p>Click to sign in to your Gnosem dashboard:</p><p><a href="${link}">${link}</a></p><p>The link expires in 15 minutes. If you didn't request this, you can ignore this email.</p><p>— Gnosem (a CUETV LLC product)</p>`,
+      textbody: `Click to sign in to your Gnosem dashboard:\n\n${link}\n\nThe link expires in 15 minutes. If you didn't request this, you can ignore this email.\n\n— Gnosem (a CUETV LLC product)`,
+      htmlbody: `<p>Click to sign in to your Gnosem dashboard:</p><p><a href="${link}">${link}</a></p><p>The link expires in 15 minutes. If you didn't request this, you can ignore this email.</p><p>— Gnosem (a CUETV LLC product)</p>`,
     }),
   });
-  if (!r.ok) return { ok: false, reason: "send_failed", status: r.status, body: await r.text() };
+  if (!r.ok) {
+    // Body is logged, never returned — see the /auth/request handler for why.
+    console.error("zeptomail send failure", r.status, await r.text().catch(() => ""));
+    return { ok: false, reason: "send_failed", status: r.status };
+  }
   return { ok: true };
 }
 
@@ -1221,10 +1239,12 @@ Sitemap: https://gnosem.dev/sitemap.xml
       // The link is NEVER returned to the caller. It only ever reaches the inbox.
       // Anything else hands a session to whoever knows a registered address.
       if (!send.ok) {
-        console.error("magic-link send failed", JSON.stringify({ reason: send.reason, status: send.status, body: send.body }));
-        if (send.reason !== "email_not_configured") {
-          return json({ error: "failed to send email; try again later" }, 502);
-        }
+        // Logged, never surfaced. A 502 here would rebuild the enumeration oracle from the
+        // other side: an unregistered address gets 200, while a registered address whose
+        // delivery failed (bounced, suppressed, provider outage) gets 502 — which is exactly
+        // the distinction this endpoint exists to hide. The operator sees the failure in
+        // logs; the caller cannot tell the two cases apart.
+        console.error("magic-link send failed", JSON.stringify({ reason: send.reason, status: send.status }));
       }
       // Identical to the unregistered-email response above, so /auth/request cannot be
       // used to enumerate which addresses have accounts.
