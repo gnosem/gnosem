@@ -619,6 +619,129 @@ async function toolMemoryList(env, ctx, args) {
   };
 }
 
+// Batch write. Accepts up to 50 entries per call. For each entry, runs the same
+// underlying path as memory_write (semantic dedup unless force=true per-entry,
+// optional LLM optimization, Vectorize upsert), but parallelizes the AI work
+// (embed + optimize) with Promise.allSettled and issues D1 inserts as a single
+// batch when possible. Free-tier limits apply to the sum: if adding N would push
+// the user past the cap, the first (limit - existing) succeed and the rest return
+// { error: 'free tier limit' }. Order is preserved in the response.
+const BULK_MAX = 50;
+
+async function toolMemoryWriteBulk(env, ctx, args) {
+  const userId = ctx.user_id;
+  const memories = Array.isArray(args?.memories) ? args.memories : null;
+  if (!memories || !memories.length) throw new Error("memories must be a non-empty array");
+  if (memories.length > BULK_MAX) throw new Error(`memories may contain at most ${BULK_MAX} entries per call`);
+
+  const now = Date.now();
+  const results = new Array(memories.length).fill(null);
+
+  // Free-tier headroom: figure out how many of the incoming entries we're allowed to write.
+  let freeRemaining = Infinity;
+  if (ctx.plan === "free") {
+    const { results: countRows } = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM memories WHERE user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL"
+    ).bind(userId).all();
+    const existing = countRows?.[0]?.n ?? 0;
+    freeRemaining = Math.max(0, FREE_TIER_MEMORY_LIMIT - existing);
+  }
+
+  // Phase 1: validate + normalize each entry. Invalid entries fail fast with an
+  // error string in results[i]; valid ones queue up for AI processing.
+  const prepped = memories.map((m, i) => {
+    try {
+      const content = String(m?.content || "").trim();
+      if (!content) throw new Error("content is required");
+      if (content.length > 8000) throw new Error("content must be ≤ 8000 characters");
+      const tags = Array.isArray(m?.tags) ? m.tags.slice(0, 20).map(t => String(t).slice(0, 40)) : [];
+      const writtenBy = m?.written_by ? String(m.written_by).slice(0, 80) : null;
+      const sessionId = m?.session_id ? String(m.session_id).slice(0, 80) : null;
+      const noOptimize = m?.no_optimize === true;
+      const force = m?.force === true;
+      return { i, content, tags, writtenBy, sessionId, noOptimize, force };
+    } catch (e) {
+      results[i] = { error: e.message || String(e) };
+      return null;
+    }
+  }).filter(Boolean);
+
+  // Phase 2: run embed + optimize for every valid entry in parallel.
+  // Promise.allSettled so one failure doesn't abort the batch.
+  const aiOutcomes = await Promise.allSettled(prepped.map(async p => {
+    const [vector, opt] = await Promise.all([
+      embed(env, p.content),
+      p.noOptimize ? Promise.resolve(null) : optimizeContent(env, p.content),
+    ]);
+    return { ...p, vector, opt };
+  }));
+
+  // Phase 3: for each entry, run dedup lookup (skipped if force=true).
+  // We do this serially per-entry to avoid double-writing entries that dedup
+  // against each other WITHIN the batch (Vectorize would need seconds to propagate).
+  // In practice dedup within a batch is rare; the primary win is preventing dups
+  // against pre-existing memories.
+  const toInsertStmts = [];
+  const vectorizeUpserts = [];
+  for (let idx = 0; idx < aiOutcomes.length; idx++) {
+    const o = aiOutcomes[idx];
+    const p = prepped[idx];
+    if (o.status !== "fulfilled") {
+      results[p.i] = { error: (o.reason && o.reason.message) || "embed/optimize failed" };
+      continue;
+    }
+    const { vector, opt } = o.value;
+    if (!p.force) {
+      const nn = await env.VECTORIZE.query(vector, { topK: 1, filter: { user_id: userId } });
+      const top = nn.matches?.[0];
+      if (top && top.score >= DEDUP_SIMILARITY_THRESHOLD) {
+        const existing = await env.DB.prepare(
+          "SELECT id, created_at FROM memories WHERE id = ? AND user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL"
+        ).bind(top.id, userId).first();
+        if (existing) {
+          results[p.i] = {
+            id: existing.id,
+            created_at: existing.created_at,
+            deduped: true,
+            matched_score: Number(top.score.toFixed(4)),
+          };
+          continue;
+        }
+      }
+    }
+    // Free-tier gating: consume one slot; if none remain, fail with the standard error.
+    if (freeRemaining <= 0) {
+      results[p.i] = { error: `Free-tier limit (${FREE_TIER_MEMORY_LIMIT} memories) reached. Upgrade to Gnosem Pro for unlimited: https://gnosem.dev/upgrade` };
+      continue;
+    }
+    freeRemaining -= 1;
+
+    const id = uuid();
+    const contentBytes = new TextEncoder().encode(p.content).length;
+    const optimized = opt?.optimized || null;
+    const optimizedBytes = optimized ? new TextEncoder().encode(optimized).length : null;
+    toInsertStmts.push(
+      env.DB.prepare(
+        "INSERT INTO memories (id, user_id, content, tags, written_by, session_id, created_at, content_optimized, content_bytes, optimized_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).bind(id, userId, p.content, JSON.stringify(p.tags), p.writtenBy, p.sessionId, now, optimized, contentBytes, optimizedBytes)
+    );
+    vectorizeUpserts.push({ id, values: vector, metadata: { user_id: userId, created_at: now } });
+    results[p.i] = {
+      id,
+      created_at: now,
+      optimized: optimized !== null,
+      ...(optimized ? { compression_ratio: Number((optimizedBytes / contentBytes).toFixed(3)) } : {}),
+    };
+  }
+
+  // Phase 4: commit all inserts as a single D1 batch + one Vectorize upsert.
+  if (toInsertStmts.length) {
+    await env.DB.batch(toInsertStmts);
+    await env.VECTORIZE.upsert(vectorizeUpserts);
+  }
+  return { results };
+}
+
 async function toolMemoryForget(env, ctx, args) {
   const userId = ctx.user_id;
   const id = String(args?.id || "");
@@ -736,16 +859,51 @@ const TOOLS = [
       required: ["old_id", "new_content"],
     },
   },
+  {
+    name: "memory_write_bulk",
+    description: "Write up to 50 memories in a single call. Each entry runs the same path as memory_write (semantic dedup by default; pass force:true per-entry to skip). Embeddings + optimizations run in parallel; D1 inserts are batched. Returns { results: [...] } with one entry per input in the same order — each is { id, created_at, optimized? } on success, { id, created_at, deduped, matched_score } on dedup, or { error } on failure. Free-tier limits apply to the sum: if adding N would exceed 200, the first (200 - existing) succeed and the rest return an error.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memories: {
+          type: "array",
+          description: "Array of memory-write entries (1–50).",
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: "object",
+            properties: {
+              content: { type: "string", description: "The fact or note to remember. Plain text, max 8000 characters." },
+              tags: { type: "array", items: { type: "string" } },
+              written_by: { type: "string" },
+              session_id: { type: "string" },
+              no_optimize: { type: "boolean", description: "Skip AI compression of long content. Default false." },
+              force: { type: "boolean", description: "Bypass semantic dedup for this entry. Default false." },
+            },
+            required: ["content"],
+          },
+        },
+      },
+      required: ["memories"],
+    },
+  },
 ];
 
 const TOOL_DISPATCH = {
   memory_write: toolMemoryWrite,
+  memory_write_bulk: toolMemoryWriteBulk,
   memory_search: toolMemorySearch,
   memory_list: toolMemoryList,
   memory_forget: toolMemoryForget,
   memory_supersede: toolMemorySupersede,
 };
 
+// handleMcp accepts a nullable ctx. Non-invasive methods (initialize, tools/list, ping,
+// notifications/initialized) succeed without auth — this is what registry scanners (Glama,
+// PulseMCP, Smithery) probe to health-check the server. tools/call requires auth because it
+// touches per-user data. Tool schemas + server metadata are already public via /llms.txt +
+// /.well-known/mcp/server-card.json; exposing them here changes nothing on the info-disclosure
+// side, only removes a false "unhealthy" from anonymous scanners.
 async function handleMcp(request, env, ctx) {
   let body;
   try { body = await request.json(); } catch { return json(jsonRpcError(null, -32700, "Parse error"), 400); }
@@ -765,7 +923,11 @@ async function handleMcp(request, env, ctx) {
     if (method === "tools/list") {
       return json(jsonRpc(id, { tools: TOOLS }));
     }
+    if (method === "ping") {
+      return json(jsonRpc(id, {}));
+    }
     if (method === "tools/call") {
+      if (!ctx) return json(jsonRpcError(id, -32001, "Authentication required: tools/call needs a Bearer token. Sign up at https://gnosem.dev to get a key."));
       const name = params?.name;
       const fn = TOOL_DISPATCH[name];
       if (!fn) return json(jsonRpcError(id, -32601, `Unknown tool: ${name}`));
@@ -774,9 +936,6 @@ async function handleMcp(request, env, ctx) {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
       }));
-    }
-    if (method === "ping") {
-      return json(jsonRpc(id, {}));
     }
     return json(jsonRpcError(id, -32601, `Method not found: ${method}`));
   } catch (e) {
@@ -1478,6 +1637,17 @@ Sitemap: https://gnosem.dev/sitemap.xml
       return handleUpgrade(ctxMaybe || { user_id: null, plan: "free", subscription_status: null });
     }
 
+    // MCP transport — handled BEFORE the general auth gate so registry scanners (Glama, Smithery,
+    // PulseMCP) can do anonymous initialize + tools/list without a Bearer token. Individual
+    // tools/call still requires auth — handleMcp does the ctx check per-method.
+    if (url.pathname === "/mcp" && request.method === "POST") {
+      const ctxMaybe = await authenticate(request, env);
+      return handleMcp(request, env, ctxMaybe);
+    }
+    if (url.pathname === "/mcp" && request.method === "GET") {
+      return json({ error: "gnosem MCP transport is HTTP POST only. Use POST /mcp with JSON-RPC 2.0." }, 405);
+    }
+
     // Everything below requires auth
     const ctx = await authenticate(request, env);
     if (!ctx) return json({ error: "unauthorized — missing or invalid Bearer token" }, 401);
@@ -1547,16 +1717,6 @@ Sitemap: https://gnosem.dev/sitemap.xml
           ...CORS,
         },
       });
-    }
-
-    if (url.pathname === "/mcp" && request.method === "POST") {
-      return handleMcp(request, env, ctx);
-    }
-
-    // MCP over GET is used for SSE stream in some transports; we don't stream server-initiated events,
-    // so respond with a friendly hint.
-    if (url.pathname === "/mcp" && request.method === "GET") {
-      return json({ error: "gnosem MCP transport is HTTP POST only. Use POST /mcp with JSON-RPC 2.0." }, 405);
     }
 
     return json({ error: "not found" }, 404);
