@@ -239,7 +239,7 @@ $("email-btn").addEventListener("click", async () => {
   const email = $("email-input").value.trim();
   const msg = $("email-msg");
   msg.className = "small";
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { msg.textContent = "Please enter a valid email."; show(msg); return; }
+  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/.test(email)) { msg.textContent = "Please enter a valid email."; show(msg); return; }
   $("email-btn").disabled = true;
   msg.textContent = "Sending…"; show(msg);
   try {

@@ -1,0 +1,36 @@
+{
+  "name": "gnosem-install",
+  "version": "0.1.0",
+  "description": "One-command installer for Gnosem — cross-vendor AI memory over MCP. Detects and configures Claude Desktop, Claude Code, Cursor, Windsurf, and Zed.",
+  "keywords": [
+    "gnosem",
+    "mcp",
+    "model-context-protocol",
+    "ai-memory",
+    "claude",
+    "chatgpt",
+    "cursor",
+    "windsurf",
+    "zed",
+    "installer"
+  ],
+  "homepage": "https://gnosem.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gnosem/gnosem",
+    "directory": "cli"
+  },
+  "bugs": "https://github.com/gnosem/gnosem/issues",
+  "license": "MIT",
+  "author": "CUETV LLC",
+  "bin": {
+    "gnosem-install": "bin/gnosem-install.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
