@@ -32,6 +32,7 @@
 import { LLMS_TXT } from "./llms-txt.js";
 import { MARK_SVG, MARK_INK_SVG, MARK_INVERSE_SVG, LOCKUP_SVG, LOCKUP_INVERSE_SVG, FAVICON_SVG, FAVICON_INK_SVG, OG_SVG, NEWSREADER_LINK } from "./brand.js";
 import { POSTS, blogIndexHtml, blogPostHtml } from "./blog.js";
+import { dashboardHtml } from "./dashboard.js";
 
 const EMBED_MODEL = "@cf/baai/bge-base-en-v1.5";
 const OPTIMIZE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
@@ -91,10 +92,12 @@ async function authenticate(request, env) {
   env.DB.prepare("UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?")
     .bind(Date.now(), keyHash).run().catch(() => {});
   // Auto-downgrade if subscription lapsed past grace (7 days).
+  // Exception: 'internal_founder' is granted permanently (no subscription_id to expire).
   const graceMs = 7 * 24 * 3600 * 1000;
   const stillPaid = row.plan === "pro" && (
     row.subscription_status === "active" ||
     row.subscription_status === "trialing" ||
+    row.subscription_status === "internal_founder" ||
     (row.subscription_period_end && Date.now() < row.subscription_period_end + graceMs)
   );
   return { user_id: row.user_id, plan: stillPaid ? "pro" : "free", subscription_status: row.subscription_status };
@@ -606,6 +609,7 @@ ${keyLine}
     }
   }
 }</pre>
+<p style="margin-top:22px">${apiKey ? `<a class="btn" style="display:inline-block;background:#15140F;color:#FAF9F7;padding:11px 20px;border-radius:3px;text-decoration:none;font-weight:700;font-size:14px" href="/dashboard?key=${apiKey}">Open your dashboard →</a>` : `<a class="btn" style="display:inline-block;background:#15140F;color:#FAF9F7;padding:11px 20px;border-radius:3px;text-decoration:none;font-weight:700;font-size:14px" href="/dashboard">Open your dashboard →</a>`}</p>
 <p style="margin-top:24px;font-size:13px;color:#777">Manage billing / cancel any time via the receipt-email link. Questions: reply to any Stripe receipt.</p>
 </body></html>`, { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
 }
@@ -712,7 +716,7 @@ ${LOCKUP_SVG.replace('<svg ', '<svg class="lockup" ')}
 <h1>One memory. Every model.</h1>
 <p class="sub">Cross-vendor AI memory over the Model Context Protocol.</p>
 <p class="lede">One persistent memory store that <strong>Claude, ChatGPT, Cursor, Windsurf, Kimi, Gemini</strong> — anything that speaks MCP or can call an HTTP tool — can read and write to. Write a fact in one, recall it from any other.</p>
-<p><a class="cta" href="/upgrade">See pricing →</a><a class="linkcta" href="/blog/launching-gnosem">Read the launch story →</a></p>
+<p><a class="cta" href="/upgrade">See pricing →</a><a class="linkcta" href="/blog/launching-gnosem">Read the launch story →</a><a class="linkcta" href="/dashboard">Sign in →</a></p>
 <hr class="rule">
 
 <h2>1. Sign up</h2>
@@ -809,6 +813,13 @@ export default {
         case "/favicon.svg":             return svg(FAVICON_SVG);
         case "/og.svg":                  return svg(OG_SVG);
       }
+    }
+
+    // Dashboard shell — public HTML; the client-side JS handles auth via Bearer in Authorization header.
+    if ((url.pathname === "/dashboard" || url.pathname === "/dashboard/") && (request.method === "GET" || request.method === "HEAD")) {
+      return new Response(request.method === "HEAD" ? null : dashboardHtml(), {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300, must-revalidate", ...CORS },
+      });
     }
 
     // AI discovery: llms.txt (per llmstxt.org — adopted by Anthropic, Cursor, Cloudflare, Perplexity)
@@ -909,6 +920,24 @@ Sitemap: https://gnosem.dev/sitemap.xml
 
     if (url.pathname === "/keys/rotate" && request.method === "POST") {
       return handleKeyRotate(request, env, ctx.user_id);
+    }
+
+    // /me — dashboard-facing account summary. Requires auth. Returns email/plan/memory_count/memory_limit.
+    if (url.pathname === "/me" && (request.method === "GET" || request.method === "HEAD")) {
+      const user = await env.DB.prepare("SELECT id, email, plan, subscription_status, subscription_period_end FROM users WHERE id = ?").bind(ctx.user_id).first();
+      const { results } = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM memories WHERE user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL"
+      ).bind(ctx.user_id).all();
+      const memoryCount = results?.[0]?.n ?? 0;
+      return json({
+        user_id: user.id,
+        email: user.email,
+        plan: ctx.plan,
+        subscription_status: user.subscription_status,
+        subscription_period_end: user.subscription_period_end,
+        memory_count: memoryCount,
+        memory_limit: ctx.plan === "free" ? FREE_TIER_MEMORY_LIMIT : null,
+      });
     }
 
     if (url.pathname === "/mcp" && request.method === "POST") {
