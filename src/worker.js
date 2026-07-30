@@ -330,12 +330,24 @@ async function handleKeyRotate(request, env, userId) {
 
 // ------------- MCP tool implementations -------------
 
+// Semantic-dedup threshold. Cosine ≥ 0.85 on BGE-base-en-v1.5 is a very strong
+// paraphrase match (e.g., "I prefer Postgres over MongoDB" vs "For greenfield work
+// I lean Postgres over Mongo"). Below this bar we still write to preserve nuance.
+const DEDUP_SIMILARITY_THRESHOLD = 0.85;
+
 async function toolMemoryWrite(env, ctx, args) {
   const userId = ctx.user_id;
   const content = String(args?.content || "").trim();
   if (!content) throw new Error("content is required");
   if (content.length > 8000) throw new Error("content must be ≤ 8000 characters");
+  const force = args?.force === true;
+  const tags = Array.isArray(args?.tags) ? args.tags.slice(0, 20).map(t => String(t).slice(0, 40)) : [];
+  const writtenBy = args?.written_by ? String(args.written_by).slice(0, 80) : null;
+  const sessionId = args?.session_id ? String(args.session_id).slice(0, 80) : null;
+  const noOptimize = args?.no_optimize === true;
+
   // Free-tier limit: 200 active memories (forgotten + superseded excluded).
+  // Checked before the expensive AI calls so we fail fast when limits apply.
   if (ctx.plan === "free") {
     const { results } = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM memories WHERE user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL"
@@ -344,19 +356,41 @@ async function toolMemoryWrite(env, ctx, args) {
       throw new Error(`Free-tier limit (${FREE_TIER_MEMORY_LIMIT} memories) reached. Upgrade to Gnosem Pro for unlimited: https://gnosem.dev/upgrade`);
     }
   }
-  const tags = Array.isArray(args?.tags) ? args.tags.slice(0, 20).map(t => String(t).slice(0, 40)) : [];
-  const writtenBy = args?.written_by ? String(args.written_by).slice(0, 80) : null;
-  const sessionId = args?.session_id ? String(args.session_id).slice(0, 80) : null;
-  const noOptimize = args?.no_optimize === true;
-  const id = uuid();
-  const now = Date.now();
-  const contentBytes = new TextEncoder().encode(content).length;
-  // Embed the raw content (semantic search hits full meaning, not the compressed form).
-  // Optimize in parallel with embed for latency.
+
+  // Embed the raw content once — we reuse the vector for both dedup lookup and (if we
+  // do write) the Vectorize upsert. Optimize runs in parallel with embed for latency.
   const [vector, opt] = await Promise.all([
     embed(env, content),
     noOptimize ? Promise.resolve(null) : optimizeContent(env, content),
   ]);
+
+  // Semantic dedup: if the new memory paraphrases an existing one (cosine ≥ threshold),
+  // return the existing id instead of writing a near-duplicate. Callers that want to
+  // correct a prior memory should call memory_supersede — dedup is not a replacement
+  // for supersede. Bypass with force:true.
+  if (!force) {
+    const nn = await env.VECTORIZE.query(vector, { topK: 1, filter: { user_id: userId } });
+    const top = nn.matches?.[0];
+    if (top && top.score >= DEDUP_SIMILARITY_THRESHOLD) {
+      // Verify the top match is still active (not forgotten/superseded) before deduping.
+      const existing = await env.DB.prepare(
+        "SELECT id, content, created_at FROM memories WHERE id = ? AND user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL"
+      ).bind(top.id, userId).first();
+      if (existing) {
+        return {
+          id: existing.id,
+          created_at: existing.created_at,
+          deduped: true,
+          matched_score: Number(top.score.toFixed(4)),
+          matched_content_preview: String(existing.content).slice(0, 120),
+        };
+      }
+    }
+  }
+
+  const id = uuid();
+  const now = Date.now();
+  const contentBytes = new TextEncoder().encode(content).length;
   const optimized = opt?.optimized || null;
   const optimizedBytes = optimized ? new TextEncoder().encode(optimized).length : null;
   await env.DB.prepare(
@@ -542,7 +576,7 @@ function safeParse(s) {
 const TOOLS = [
   {
     name: "memory_write",
-    description: "Save a fact, preference, decision, or note to the user's cross-model memory. Any MCP client can read this back later. Include written_by (e.g. 'claude-code', 'gpt-5', 'kimi-k2') for provenance and session_id to group related writes. Long content (>400 chars) is automatically compressed on write to a structured-facts form optimized for LLM reading — the raw text is preserved. Pass no_optimize:true to skip.",
+    description: "Save a fact, preference, decision, or note to the user's cross-model memory. Any MCP client can read this back later. Include written_by (e.g. 'claude-code', 'gpt-5', 'kimi-k2') for provenance and session_id to group related writes. Long content (>400 chars) is automatically compressed on write to a structured-facts form optimized for LLM reading — the raw text is preserved. Pass no_optimize:true to skip. Writes are semantically deduped by default: if the new content paraphrases an existing memory (cosine ≥ 0.85), the existing id is returned with deduped:true instead of writing a near-duplicate. Pass force:true to bypass dedup, or use memory_supersede to explicitly correct a prior memory.",
     inputSchema: {
       type: "object",
       properties: {
@@ -551,6 +585,7 @@ const TOOLS = [
         written_by: { type: "string", description: "Identifier of the model / client writing this (e.g. 'claude-code', 'gpt-5', 'kimi-k2', 'manual')." },
         session_id: { type: "string", description: "Opaque identifier grouping related writes from the same conversation." },
         no_optimize: { type: "boolean", description: "Skip AI compression of long content. Default false." },
+        force: { type: "boolean", description: "Bypass semantic dedup and write anyway. Default false." },
       },
       required: ["content"],
     },
