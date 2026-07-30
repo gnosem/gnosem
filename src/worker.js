@@ -33,6 +33,7 @@ import { LLMS_TXT } from "./llms-txt.js";
 import { MARK_SVG, MARK_INK_SVG, MARK_INVERSE_SVG, LOCKUP_SVG, LOCKUP_INVERSE_SVG, FAVICON_SVG, FAVICON_INK_SVG, OG_SVG, NEWSREADER_LINK } from "./brand.js";
 import { POSTS, blogIndexHtml, blogPostHtml } from "./blog.js";
 import { dashboardHtml } from "./dashboard.js";
+import { OPENAPI_SPEC } from "./openapi.js";
 
 const EMBED_MODEL = "@cf/baai/bge-base-en-v1.5";
 const OPTIMIZE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
@@ -1598,6 +1599,14 @@ async function route(request, env) {
         case "/favicon.svg":             return svg(FAVICON_SVG);
         case "/og.svg":                  return svg(OG_SVG);
       }
+    }
+
+    // OpenAPI 3.1 spec — public, no auth. Any REST client (Postman, Insomnia, code generators)
+    // can point at this URL and get a machine-readable description of every REST endpoint.
+    if (url.pathname === "/openapi.json" && (request.method === "GET" || request.method === "HEAD")) {
+      return new Response(request.method === "HEAD" ? null : JSON.stringify(OPENAPI_SPEC, null, 2), {
+        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "public, max-age=3600", ...CORS },
+      });
     }
 
     // Health check — public, no auth. Uptime probes + external monitors hit this.

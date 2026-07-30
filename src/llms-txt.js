@@ -23,6 +23,7 @@ Every current AI vendor has proprietary memory: OpenAI's ChatGPT memory doesn't 
 - \`POST https://gnosem.dev/auth/request\` — request a magic-link email for dashboard sign-in
 - \`POST https://gnosem.dev/keys/rotate\` — issue a new API key, revoke the current one
 - \`GET  https://gnosem.dev/dashboard\` — browser UI for account management
+- \`GET  https://gnosem.dev/openapi.json\` — OpenAPI 3.1 spec for the REST surface (Postman / SDK generators / API tooling)
 - \`GET  https://gnosem.dev/demo/search\` — public read-only semantic search over a demo memory graph (no signup)
 - \`GET  https://gnosem.dev/health\` — uptime probe (JSON, no auth)
 - \`GET  https://gnosem.dev/upgrade\` — pricing + Pro upgrade page

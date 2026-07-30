@@ -31,6 +31,184 @@ a.cta{color:var(--paper)}
 
 export const POSTS = [
   {
+    slug: "reciprocal-rank-fusion-hybrid-search",
+    title: "Reciprocal Rank Fusion — why Gnosem's default search blends BM25 and cosine",
+    subtitle: "Semantic search misses exact strings; keyword search misses meaning. Blending them via RRF beats either alone. Here's how, and why the k=60 constant that shows up in every RRF paper actually matters.",
+    published: "2026-07-30",
+    readingMinutes: 7,
+    description: "Gnosem's default memory_search is a hybrid of BM25 (SQLite FTS5) and cosine similarity (Cloudflare Vectorize) blended via Reciprocal Rank Fusion. This post walks through why hybrid beats either standalone, the RRF math, and the specific bugs we hit implementing it on Cloudflare Workers.",
+    keywords: "reciprocal rank fusion, hybrid search MCP, BM25 vs vector search, SQLite FTS5 with Vectorize, Cloudflare Workers hybrid retrieval, semantic search plus keyword",
+    bodyHtml: `
+<p>Semantic search — embed the query, find the nearest neighbors in vector space — is astonishingly good at "find me the memory that means roughly this even though I used different words." It's also astonishingly bad at "find me the memory that mentions <code>gh_a4c71a70</code>" or "find me the memory dated 2026-06-04." Exact string matches are exactly what embeddings are worst at. The embedding of "gh_a4c71a70" gets learned as roughly-noise-shaped and hits every other roughly-noise-shaped identifier in the store.</p>
+
+<p>Keyword search — old-school inverted index, BM25 scoring — has the mirror problem. It nails "the memory containing this exact ID" and misses "the memory about our database choice" if you happen to search "which SQL flavor did we pick."</p>
+
+<p>Gnosem's default <code>memory_search</code> is a hybrid. It runs BOTH BM25 (via SQLite FTS5) and cosine (via Cloudflare Vectorize) on every query, then blends the two ranked lists into one using Reciprocal Rank Fusion. This post explains why, how, and what tripped us up building it on Cloudflare Workers.</p>
+
+<h2 id="the-math">The math</h2>
+
+<p>Reciprocal Rank Fusion is beautifully simple. Given N ranked lists of hits, the fused score for any candidate <code>d</code> is:</p>
+
+<pre><code>score(d) = Σ  1 / (k + rank_i(d))
+           i</code></pre>
+
+<p>Where <code>rank_i(d)</code> is d's position (1-indexed) in list i, and <code>k</code> is a smoothing constant. Candidates that don't appear in list i contribute nothing to that sum. Top-K after fusion = the final result.</p>
+
+<p>Two properties matter:</p>
+
+<ol>
+<li><strong>It doesn't require the two lists to share a score scale.</strong> BM25 scores are unbounded positive numbers; cosine similarity is bounded [-1, 1]. If we averaged raw scores, BM25's big numbers would dominate. RRF only uses ranks, so scale disagreements disappear.</li>
+<li><strong>The constant <code>k=60</code> that everyone uses</strong> — <a href="https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf">the original 2009 paper</a> settled on 60 empirically. It's a tuning knob that controls how much weight bottom-ranked hits get. Smaller k = more weight to the top few; larger k = flatter distribution. 60 is a sweet spot for TREC-style retrieval and turns out to be pretty universal.</li>
+</ol>
+
+<p>Concretely, if a memory is #1 in the BM25 list and #3 in the cosine list, its fused score is <code>1/(60+1) + 1/(60+3) = 0.0164 + 0.0159 = 0.0323</code>. A memory that's #1 in both lists gets <code>1/61 + 1/61 = 0.0328</code>. A memory that's #1 in cosine but doesn't appear in BM25 at all gets <code>0.0164</code>. Being in both lists (even at moderate rank) usually beats being #1 in only one.</p>
+
+<h2 id="the-implementation">The implementation on Cloudflare Workers</h2>
+
+<p>Gnosem's storage is D1 (SQLite at the edge) + Vectorize (vector DB) + Workers AI (embedding model). Adding hybrid search meant adding a keyword index alongside the existing embeddings.</p>
+
+<p>SQLite has excellent full-text search via <a href="https://sqlite.org/fts5.html">FTS5</a>, which is available in D1. Our migration created a contentless FTS5 virtual table backed by triggers on the primary <code>memories</code> table:</p>
+
+<pre><code>CREATE VIRTUAL TABLE memories_fts USING fts5(
+  content, content_optimized,
+  content='memories', content_rowid='rowid'
+);
+
+-- keep it in sync
+CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, content, content_optimized)
+  VALUES (new.rowid, new.content, new.content_optimized);
+END;
+-- similar triggers for UPDATE and DELETE</code></pre>
+
+<p>On every <code>memory_search</code>:</p>
+
+<ol>
+<li>Embed the query via Workers AI (BGE-base-en-v1.5, one call, ~10ms).</li>
+<li>Fire two queries in parallel with <code>Promise.all</code>:
+  <ul>
+    <li><code>VECTORIZE.query(vec, { topK: 20, filter: { user_id } })</code></li>
+    <li><code>SELECT id FROM memories JOIN memories_fts ON memories_fts.rowid = memories.rowid WHERE memories_fts MATCH ? AND user_id = ? LIMIT 20</code></li>
+  </ul>
+</li>
+<li>Blend both ranked lists via RRF.</li>
+<li>Hydrate the top-K memory rows from D1 in one round-trip.</li>
+</ol>
+
+<p>Total end-to-end: 50–150ms depending on region.</p>
+
+<h2 id="the-mode-arg">The mode arg</h2>
+
+<p>Not every caller wants hybrid. A tool that already knows the user wants exact-string retrieval (looking up an ID) can request pure keyword. A tool doing broad "what have I thought about X?" recall can prefer pure semantic. We added a <code>mode</code> argument:</p>
+
+<ul>
+<li><code>mode: "hybrid"</code> (default) — RRF blend</li>
+<li><code>mode: "semantic"</code> — Vectorize only (the old behavior)</li>
+<li><code>mode: "keyword"</code> — FTS5 only</li>
+</ul>
+
+<p>Most callers should leave the default. It's the strictly better choice for open-ended queries.</p>
+
+<h2 id="the-gotchas">The gotchas we hit</h2>
+
+<p><strong>FTS5 special characters break the query.</strong> FTS5 has its own mini-query-language: <code>"phrase match"</code>, <code>+required</code>, <code>NEAR/5</code>, etc. If a user query contains any of those characters raw, the parser throws. We wrap every user query in double quotes and escape internal double quotes:</p>
+
+<pre><code>const ftsQuery = '"' + raw.replaceAll('"', '""') + '"';</code></pre>
+
+<p>This forces FTS5 to treat the whole query as a phrase / bag of tokens. Costs us some flexibility (users can't type FTS5 syntax on purpose) but eliminates a whole class of query-parse crashes.</p>
+
+<p><strong>FTS5 keys by rowid, our primary key is a UUID.</strong> We could have declared <code>content='memories', content_rowid='rowid'</code> — SQLite auto-generates rowid separately from our id column. Then joining back to <code>memories</code> was a <code>JOIN ... ON memories_fts.rowid = memories.rowid</code>. That's what we shipped, and it works, but it means the FTS index and the main table always share the same physical rowid. Backfill of existing memories on migration used a single <code>INSERT INTO memories_fts SELECT rowid, content, content_optimized FROM memories</code>.</p>
+
+<p><strong>Empty FTS results.</strong> If the query has zero keyword hits (e.g. a purely semantic query like "how does this feel?"), the FTS list is empty. RRF handles this naturally — every candidate's rank in an empty list is undefined, contributes nothing. The final ranking is effectively 100% semantic. No special case needed.</p>
+
+<h2 id="what-we-considered-and-skipped">What we considered and skipped</h2>
+
+<p><strong>Cross-encoder reranking.</strong> Take the top 20 from each side, feed all 40 into a cross-encoder that scores query-doc pairs jointly, take the top K. Cross-encoders are the state-of-the-art for retrieval quality but each pair costs an inference call. At 40 pairs per query on Workers AI, that's another 200–500ms of latency and 40× the compute cost. Skipped for now; may add as an opt-in <code>mode: "rerank"</code> later.</p>
+
+<p><strong>Weighted BM25 + cosine averaging with sigmoid normalization.</strong> Instead of RRF, normalize both scores into a [0,1] range and blend with a weight. This works but requires tuning the weight per corpus. RRF just works out of the box.</p>
+
+<p><strong>Query expansion (LLM-generates 3 synonymous queries, run all three, blend results).</strong> Genuine quality lift but triples the search cost. Skipped.</p>
+
+<p>If you use Gnosem via MCP, the default hybrid search kicks in on every <code>memory_search</code> call unless you explicitly pass <code>mode: "semantic"</code> or <code>mode: "keyword"</code>. If you want to see the difference, run the same query three times against the <a href="/">demo store</a> with each mode and compare — the hybrid results are consistently the ones you'd actually pick.</p>
+`,
+  },
+  {
+    slug: "intra-batch-dedup",
+    title: "How Gnosem's memory_write_bulk dedupes within a single batch",
+    subtitle: "The obvious 'hash on insert' pattern doesn't work when 50 identical entries all try to insert at once. Here's the two-phase reservation we shipped instead.",
+    published: "2026-07-30",
+    readingMinutes: 5,
+    description: "memory_write_bulk accepts up to 50 memories in one MCP call. Naive per-entry hash dedup misses the case where the batch itself contains duplicates. Gnosem uses a two-phase in-memory reservation table to catch intra-batch dupes before any storage writes fire.",
+    keywords: "batch memory write, MCP bulk write, intra-batch deduplication, content hash dedup, cross-vendor AI memory API",
+    bodyHtml: `
+<p>Bulk memory writes are the escape hatch for anyone moving from another memory service (mem0, ChatGPT memory dump, notes app) into Gnosem. The pattern is obvious: pass an array of up to 50 memories to <code>memory_write_bulk</code>, get back an ordered array of results (one per input). Under the hood it parallelizes embeddings and batches the D1 inserts.</p>
+
+<p>What's not obvious is what happens when the batch itself has duplicates.</p>
+
+<h2 id="the-obvious-approach">The obvious approach (that doesn't work)</h2>
+
+<p>Gnosem does <a href="/blog/security-posture">content-hash dedup on every write</a>: SHA-256 the raw content, look up existing rows with the same user_id + hash, short-circuit if found. Fast, cheap, catches byte-identical repeats.</p>
+
+<p>That works fine for one-at-a-time writes. In a batch, it hits a subtle race:</p>
+
+<pre><code>batch = [
+  { content: "I prefer Postgres for greenfield work" },
+  { content: "I prefer Postgres for greenfield work" },  // exact dupe
+  { content: "I prefer Postgres for greenfield work" },  // also exact dupe
+]</code></pre>
+
+<p>The batch handler runs all three entries through embed + optimize in parallel via <code>Promise.allSettled</code>. Each entry independently does the hash lookup. At the moment of lookup, NONE of them are in the database yet — the batch hasn't inserted anything. All three lookups return "not found." All three then proceed to insert. You end up with three identical rows.</p>
+
+<p>The transactional fix — a SERIALIZABLE transaction with per-row locks — isn't available in D1. Even if it were, serializing the batch defeats the whole point of parallel embed calls.</p>
+
+<h2 id="what-we-shipped">The two-phase reservation</h2>
+
+<p>Instead of relying on the storage layer to enforce uniqueness, the batch handler keeps its own in-memory table for the duration of the request. Two phases:</p>
+
+<p><strong>Phase 1: hash + reserve.</strong> Walk the input array once. For each entry, compute the SHA-256 hash. Look up in D1 for existing rows with that hash (belt-and-suspenders — catches dupes across prior writes). If found, mark the entry as <code>exact_duplicate: true</code> and remember the existing id. If not found, check the local reservation table:</p>
+
+<ul>
+<li>If the hash is <strong>already reserved</strong> by an earlier entry in this batch, add this entry's index to that hash's "waiters" list.</li>
+<li>If the hash is <strong>new</strong>, reserve it under this entry's index and mark this entry as the "primary" for the hash.</li>
+</ul>
+
+<p>After phase 1, the reservation table looks something like:</p>
+
+<pre><code>{
+  "sha256:abc123...": { primary: 0, waiters: [1, 2] },
+  "sha256:def456...": { primary: 3, waiters: [] },
+}</code></pre>
+
+<p>Entries at indices 1 and 2 will NOT hit the embedding or write path — they're waiters. They inherit whatever the primary (index 0) resolves to.</p>
+
+<p><strong>Phase 2: run primaries, back-fill waiters.</strong> Fire embed + optimize + insert for every primary index in parallel via <code>Promise.allSettled</code>. When each primary resolves, back-fill the results array at all the waiter indices with <code>{ id: primary.id, created_at: primary.created_at, exact_duplicate: true }</code>.</p>
+
+<p>The result: three identical entries in a batch produce exactly one embedded write, and the response is:</p>
+
+<pre><code>[
+  { id: "2cccc06e-4ce9-4bf0-a62d-5be01bec8127", created_at: 1785444857131 },
+  { id: "2cccc06e-4ce9-4bf0-a62d-5be01bec8127", created_at: 1785444857131, exact_duplicate: true },
+  { id: "2cccc06e-4ce9-4bf0-a62d-5be01bec8127", created_at: 1785444857131, exact_duplicate: true },
+]</code></pre>
+
+<p>Order preserved, all three point to the same id, one embedding call fired instead of three.</p>
+
+<h2 id="the-tricky-edge-cases">The tricky edge cases</h2>
+
+<p>Two things broke the first cut of this implementation and shipped as follow-up fixes:</p>
+
+<p><strong>The primary took a non-write path.</strong> If the primary's own semantic-dedup check (cosine ≥ 0.85 against a prior memory) fired, or if the free-tier limit was hit, the primary would return without an id — but the waiters were already queued expecting an id from the primary. The fix: extract a <code>backfillWaiters(primaryResult)</code> helper and call it on <em>every</em> terminal branch of the primary's write path — success, semantic dedup, hash dedup, free-tier reject, whatever. Every branch produces a result; waiters inherit whatever that result is.</p>
+
+<p><strong>Vectorize is eventually consistent.</strong> The semantic dedup check (cosine ≥ 0.85) queries Vectorize. Two identical entries in the same batch will not see each other in Vectorize during phase 1, because neither has been indexed yet. So semantic dedup between in-batch entries is best-effort — content-hash dedup catches identical-string dupes but "paraphrases in the same batch" won't dedup until the second write happens after the first has been indexed (a few seconds). We accept this tradeoff; it's rare in practice and the alternative (serialize the batch) is worse.</p>
+
+<h2 id="the-limit">Why 50?</h2>
+
+<p>The 50-entry-per-batch cap is arbitrary but deliberate. Bigger batches would work — the parallel-embed pattern scales. The cap is there to bound worst-case CPU on a single Worker invocation (50 embeddings × ~30ms each + one D1 batch insert ≈ 1.5s). Above that, callers should chunk their own import into 50-entry pages. We may raise this once we see real usage patterns.</p>
+
+<p>Bulk write is the API used by importers, migration scripts, and any tool moving a corpus of notes into Gnosem in one shot. If you're building one, you can rely on the intra-batch dedup — sending 50 slightly-varying entries that share content with prior writes will produce zero surprise duplicates.</p>
+`,
+  },
+  {
     slug: "introducing-projmap",
     title: "Introducing projmap — where your code lives, so every AI you use can find it",
     subtitle: "A companion CLI that walks your filesystem, discovers project roots, and writes them to Gnosem as searchable memories. Backed by gnosem; usable from any MCP client.",
