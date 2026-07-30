@@ -391,16 +391,76 @@ function shapeMemoryRow(r, { raw }) {
   };
 }
 
+// ------------- filter helpers (shared by search + list) -------------
+//
+// Normalizes the optional filter args accepted by memory_search and memory_list.
+// Returns { tags, written_by, session_id, since, until } with defensive coercion.
+// Any field left undefined means "no constraint on this dimension".
+function normalizeFilters(args) {
+  const tags = Array.isArray(args?.tags)
+    ? args.tags.map(t => String(t)).filter(Boolean).slice(0, 20)
+    : null;
+  const writtenBy = args?.written_by ? String(args.written_by).slice(0, 80) : null;
+  const sessionId = args?.session_id ? String(args.session_id).slice(0, 80) : null;
+  const since = Number.isFinite(Number(args?.since)) ? Number(args.since) : null;
+  const until = Number.isFinite(Number(args?.until)) ? Number(args.until) : null;
+  return { tags, writtenBy, sessionId, since, until };
+}
+
+// Post-filter a hydrated memory row against normalized filters.
+// AND semantics: every provided filter must match. Used for the search path where
+// filters run after Vectorize returns top-k hits.
+function rowMatchesFilters(r, f) {
+  if (f.writtenBy !== null && r.written_by !== f.writtenBy) return false;
+  if (f.sessionId !== null && r.session_id !== f.sessionId) return false;
+  if (f.since !== null && !(r.created_at >= f.since)) return false;
+  if (f.until !== null && !(r.created_at < f.until)) return false;
+  if (f.tags && f.tags.length) {
+    const rowTags = safeParse(r.tags);
+    for (const t of f.tags) {
+      if (!rowTags.includes(t)) return false;
+    }
+  }
+  return true;
+}
+
+// Build SQL WHERE fragments + bindings for the list path where filters go straight
+// into the query. Tag matching uses LIKE on the JSON-serialized tags column: since we
+// always store tags as JSON.stringify([...]), each tag appears as `"<tag>"` in the
+// serialized string, and LIKE '%"tag"%' is a safe substring match that avoids
+// substring collisions across tag names.
+function buildFilterSql(f) {
+  const parts = [];
+  const binds = [];
+  if (f.writtenBy !== null) { parts.push("written_by = ?"); binds.push(f.writtenBy); }
+  if (f.sessionId !== null) { parts.push("session_id = ?"); binds.push(f.sessionId); }
+  if (f.since !== null) { parts.push("created_at >= ?"); binds.push(f.since); }
+  if (f.until !== null) { parts.push("created_at < ?"); binds.push(f.until); }
+  if (f.tags && f.tags.length) {
+    for (const t of f.tags) {
+      // Per-predicate ESCAPE so each LIKE respects backslash escapes independently.
+      parts.push("tags LIKE ? ESCAPE '\\'");
+      const escaped = String(t).replace(/([\\%_])/g, "\\$1");
+      binds.push(`%"${escaped}"%`);
+    }
+  }
+  return { sql: parts.length ? " AND " + parts.join(" AND ") : "", binds };
+}
+
 async function toolMemorySearch(env, ctx, args) {
   const userId = ctx.user_id;
   const query = String(args?.query || "").trim();
   if (!query) throw new Error("query is required");
   const k = Math.min(Math.max(Number(args?.k) || 10, 1), 50);
   const raw = args?.raw === true;
+  const filters = normalizeFilters(args);
+  const hasFilters = filters.tags || filters.writtenBy !== null || filters.sessionId !== null || filters.since !== null || filters.until !== null;
   const queryVec = await embed(env, query);
   // Vectorize filter by user_id so we never leak across users.
+  // Over-fetch heavier when filters are on so post-filter has more raw hits to work with.
+  const overFetch = hasFilters ? Math.min(k * 6, 100) : k * 2;
   const results = await env.VECTORIZE.query(queryVec, {
-    topK: k * 2, // over-fetch, we filter forgotten/superseded in D1
+    topK: overFetch,
     filter: { user_id: userId },
   });
   if (!results.matches?.length) return { matches: [] };
@@ -413,7 +473,8 @@ async function toolMemorySearch(env, ctx, args) {
      FROM memories
      WHERE id IN (${placeholders}) AND user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL`
   ).bind(...ids, userId).all()).results || [];
-  const enriched = rows.map(r => ({ ...shapeMemoryRow(r, { raw }), score: scoreById[r.id] ?? null }))
+  const filtered = hasFilters ? rows.filter(r => rowMatchesFilters(r, filters)) : rows;
+  const enriched = filtered.map(r => ({ ...shapeMemoryRow(r, { raw }), score: scoreById[r.id] ?? null }))
     .sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).slice(0, k);
   return { matches: enriched };
 }
@@ -423,12 +484,14 @@ async function toolMemoryList(env, ctx, args) {
   const limit = Math.min(Math.max(Number(args?.limit) || 50, 1), 200);
   const cursor = args?.cursor ? Number(args.cursor) : Date.now();
   const raw = args?.raw === true;
+  const filters = normalizeFilters(args);
+  const { sql: filterSql, binds: filterBinds } = buildFilterSql(filters);
   const rows = (await env.DB.prepare(
     `SELECT id, content, content_optimized, tags, written_by, session_id, created_at
      FROM memories
-     WHERE user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL AND created_at < ?
+     WHERE user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL AND created_at < ?${filterSql}
      ORDER BY created_at DESC LIMIT ?`
-  ).bind(userId, cursor, limit).all()).results || [];
+  ).bind(userId, cursor, ...filterBinds, limit).all()).results || [];
   const nextCursor = rows.length === limit ? rows[rows.length - 1].created_at : null;
   return {
     memories: rows.map(r => shapeMemoryRow(r, { raw })),
@@ -494,26 +557,36 @@ const TOOLS = [
   },
   {
     name: "memory_search",
-    description: "Semantic search across the user's memories. Returns the top-k most similar rows by cosine similarity of the embedded query and content. By default `content` is the LLM-optimized (compressed) form when available — smaller for your context window; the raw text is in `content_raw`. Pass raw:true to invert. Excludes forgotten and superseded memories.",
+    description: "Semantic search across the user's memories. Returns the top-k most similar rows by cosine similarity of the embedded query and content. By default `content` is the LLM-optimized (compressed) form when available — smaller for your context window; the raw text is in `content_raw`. Pass raw:true to invert. Excludes forgotten and superseded memories. Optional filters narrow the semantic top-k after retrieval: pass tags (AND across all supplied), written_by, session_id, and/or since/until time bounds (ms epoch).",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Natural-language search query." },
         k: { type: "integer", description: "Max results (1–50). Default 10." },
         raw: { type: "boolean", description: "Return original prose instead of the compressed form. Default false." },
+        tags: { type: "array", items: { type: "string" }, description: "Only return memories containing ALL of these tags (AND semantics)." },
+        written_by: { type: "string", description: "Only return memories with an exact written_by match (e.g. 'claude-code')." },
+        session_id: { type: "string", description: "Only return memories with an exact session_id match." },
+        since: { type: "integer", description: "Only return memories created at or after this ms-epoch timestamp." },
+        until: { type: "integer", description: "Only return memories created strictly before this ms-epoch timestamp." },
       },
       required: ["query"],
     },
   },
   {
     name: "memory_list",
-    description: "List the user's most recent memories in reverse chronological order. Use for browsing or catching up on what the user's other model sessions have written recently. Same content/content_raw shape as memory_search.",
+    description: "List the user's most recent memories in reverse chronological order. Use for browsing or catching up on what the user's other model sessions have written recently. Same content/content_raw shape as memory_search. Optional filters (tags, written_by, session_id, since, until) narrow the listing at the SQL level.",
     inputSchema: {
       type: "object",
       properties: {
         limit: { type: "integer", description: "Max rows to return (1–200). Default 50." },
         cursor: { type: "integer", description: "Pagination cursor from a previous call's `cursor` field (ms epoch); returns rows older than this timestamp." },
         raw: { type: "boolean", description: "Return original prose instead of the compressed form. Default false." },
+        tags: { type: "array", items: { type: "string" }, description: "Only return memories containing ALL of these tags (AND semantics)." },
+        written_by: { type: "string", description: "Only return memories with an exact written_by match." },
+        session_id: { type: "string", description: "Only return memories with an exact session_id match." },
+        since: { type: "integer", description: "Only return memories created at or after this ms-epoch timestamp." },
+        until: { type: "integer", description: "Only return memories created strictly before this ms-epoch timestamp." },
       },
     },
   },

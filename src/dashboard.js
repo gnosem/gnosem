@@ -60,6 +60,17 @@ textarea{resize:vertical;min-height:96px;line-height:1.5}
 .field .hint.warn{color:#8a2020}
 .check{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--ink-soft);margin:8px 0 12px;cursor:pointer}
 .check input{width:auto;margin:0}
+.search-row{display:flex;gap:8px;margin:0 0 10px}
+.search-row input{flex:1}
+.search-row .btn{flex:0 0 auto}
+.filter-row{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}
+.filter-row .fcell{flex:1 1 160px;min-width:0}
+.filter-row .fcell label{display:block;font-size:11.5px;color:var(--ink-soft);letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px}
+.filter-row input{font-size:13px;padding:6px 8px}
+.filter-actions{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:2px}
+.score{display:inline-block;font-size:11px;font-variant-numeric:tabular-nums;letter-spacing:.04em;background:var(--terracotta);color:var(--paper);padding:1px 7px;border-radius:2px;margin-left:6px;vertical-align:1px}
+.mem .meta .score{vertical-align:0}
+@media (max-width:520px){.search-row{flex-direction:column}.filter-row .fcell{flex-basis:calc(50% - 4px)}}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 18px;border-radius:3px;font-size:13.5px;letter-spacing:.02em;box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:100;opacity:0;transition:opacity .18s ease}
 .toast.show{opacity:1}
 .callout{background:#fff;border-left:3px solid var(--terracotta);padding:12px 14px;margin:0 0 14px;font-size:14px}
@@ -112,7 +123,25 @@ pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;backgroun
     <p id="add-err" class="err hidden"></p>
   </div>
 
-  <h2>Recent memories</h2>
+  <h2>Browse memories</h2>
+  <div class="card">
+    <div class="search-row">
+      <input id="search-q" type="text" placeholder="Search across your memories…">
+      <button class="btn" id="search-btn">Search</button>
+    </div>
+    <div class="filter-row">
+      <div class="fcell"><label for="search-written-by">Written by</label><input id="search-written-by" type="text" placeholder="e.g. claude-code"></div>
+      <div class="fcell"><label for="search-tag">Tag</label><input id="search-tag" type="text" placeholder="e.g. preference"></div>
+      <div class="fcell"><label for="search-since">From</label><input id="search-since" type="date"></div>
+      <div class="fcell"><label for="search-until">To</label><input id="search-until" type="date"></div>
+    </div>
+    <div class="filter-actions">
+      <span class="small" id="search-status">Enter a query or apply a filter to search. Leave everything empty to see the recent list below.</span>
+      <button class="btn ghost" id="search-clear">Clear</button>
+    </div>
+  </div>
+
+  <h2 id="results-heading">Recent memories</h2>
   <div id="mem-list" class="card"><p class="small">Loading…</p></div>
 
   <h2>Export</h2>
@@ -239,8 +268,9 @@ function showToast(msg) {
 
 function renderMemoryCard(m) {
   const tags = (m.tags || []).map(t => "<span>" + escapeHtml(t) + "</span>").join("");
+  const score = (typeof m.score === "number") ? ' <span class="score">' + m.score.toFixed(2) + '</span>' : "";
   return '<div class="mem">'
-    + '<p class="meta">' + fmtDate(m.created_at) + (m.written_by ? " · " + escapeHtml(m.written_by) : "") + '</p>'
+    + '<p class="meta">' + fmtDate(m.created_at) + (m.written_by ? " · " + escapeHtml(m.written_by) : "") + score + '</p>'
     + '<p class="content">' + escapeHtml(m.content) + '</p>'
     + (tags ? '<p class="tags">' + tags + '</p>' : '')
     + '<p class="actions"><button class="btn ghost" data-forget="' + m.id + '">Forget</button></p>'
@@ -313,6 +343,109 @@ function updateAddCount() {
   if (n > 7500) hint.classList.add("warn"); else hint.classList.remove("warn");
 }
 
+function collectSearchFilters() {
+  const writtenBy = $("search-written-by").value.trim();
+  const tag = $("search-tag").value.trim();
+  const sinceStr = $("search-since").value;
+  const untilStr = $("search-until").value;
+  const filters = {};
+  if (writtenBy) filters.written_by = writtenBy;
+  if (tag) filters.tags = [tag];
+  if (sinceStr) filters.since = new Date(sinceStr + "T00:00:00").getTime();
+  // until is exclusive on the server; add one day so a user-picked "to" date is inclusive.
+  if (untilStr) filters.until = new Date(untilStr + "T00:00:00").getTime() + 86400000;
+  return filters;
+}
+
+function anySearchActive() {
+  const q = $("search-q").value.trim();
+  const f = collectSearchFilters();
+  return q.length > 0 || Object.keys(f).length > 0;
+}
+
+// Client-side filter — used as a fallback when the server ignores the filter args (older
+// deploys) so the UI still respects the user's selection.
+function applyFiltersClientSide(items, filters) {
+  return items.filter(m => {
+    if (filters.written_by && m.written_by !== filters.written_by) return false;
+    if (filters.tags && filters.tags.length) {
+      const rowTags = m.tags || [];
+      for (const t of filters.tags) if (!rowTags.includes(t)) return false;
+    }
+    if (filters.since && !(m.created_at >= filters.since)) return false;
+    if (filters.until && !(m.created_at < filters.until)) return false;
+    return true;
+  });
+}
+
+async function callSearch(query, filters) {
+  const args = { query, k: 25, ...filters };
+  const body = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "memory_search", arguments: args } };
+  let r = await authedFetch("/mcp", { method: "POST", body: JSON.stringify(body) });
+  let j = await r.json();
+  // If the server rejected because it doesn't understand filter args, retry with just the query.
+  if (j.error && Object.keys(filters).length) {
+    const body2 = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "memory_search", arguments: { query, k: 25 } } };
+    r = await authedFetch("/mcp", { method: "POST", body: JSON.stringify(body2) });
+    j = await r.json();
+  }
+  if (j.error) throw new Error(j.error.message || "Search failed");
+  return j?.result?.structuredContent?.matches || [];
+}
+
+async function runSearch() {
+  const query = $("search-q").value.trim();
+  const filters = collectSearchFilters();
+  if (!query && Object.keys(filters).length === 0) {
+    // Nothing to search — revert to recent list.
+    $("results-heading").textContent = "Recent memories";
+    $("search-status").textContent = "Enter a query or apply a filter to search. Leave everything empty to see the recent list below.";
+    loadMemories();
+    return;
+  }
+  const list = $("mem-list");
+  list.innerHTML = '<p class="small">Searching…</p>';
+  $("results-heading").textContent = "Search results";
+  try {
+    let items;
+    if (query) {
+      items = await callSearch(query, filters);
+    } else {
+      // Filters only, no semantic query — fetch the recent list and filter client-side.
+      const r = await authedFetch("/mcp", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "memory_list", arguments: { limit: 200, raw: true, ...filters } } }),
+      });
+      const j = await r.json();
+      items = j?.result?.structuredContent?.memories || [];
+    }
+    // Always run the client-side filter pass — safe no-op if the server already filtered.
+    items = applyFiltersClientSide(items, filters);
+    if (items.length === 0) {
+      list.innerHTML = '<p class="small">No memories match. Try broader terms. <a href="#" id="empty-clear">Clear filters</a>.</p>';
+      $("empty-clear")?.addEventListener("click", (e) => { e.preventDefault(); clearSearch(); });
+      $("search-status").textContent = "0 results";
+      return;
+    }
+    list.innerHTML = items.map(renderMemoryCard).join("");
+    list.querySelectorAll("[data-forget]").forEach(btn => btn.addEventListener("click", () => forgetMemory(btn.dataset.forget)));
+    $("search-status").textContent = items.length + " result" + (items.length === 1 ? "" : "s");
+  } catch (e) {
+    list.innerHTML = '<p class="err">Search failed: ' + escapeHtml(e.message || "unknown error") + '</p>';
+  }
+}
+
+function clearSearch() {
+  $("search-q").value = "";
+  $("search-written-by").value = "";
+  $("search-tag").value = "";
+  $("search-since").value = "";
+  $("search-until").value = "";
+  $("results-heading").textContent = "Recent memories";
+  $("search-status").textContent = "Enter a query or apply a filter to search. Leave everything empty to see the recent list below.";
+  loadMemories();
+}
+
 async function boot() {
   getKey(); // consume ?key= from URL if present
   // Try /me — succeeds if we have either a valid session cookie or a Bearer key
@@ -356,6 +489,11 @@ $("rotate-btn").addEventListener("click", rotateKey);
 $("add-submit").addEventListener("click", addMemory);
 $("add-content").addEventListener("input", updateAddCount);
 updateAddCount();
+
+$("search-btn").addEventListener("click", runSearch);
+$("search-clear").addEventListener("click", clearSearch);
+$("search-q").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
+["search-written-by","search-tag"].forEach(id => $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); }));
 
 $("export-btn").addEventListener("click", async () => {
   const btn = $("export-btn");
