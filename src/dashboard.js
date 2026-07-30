@@ -245,10 +245,7 @@ $("email-btn").addEventListener("click", async () => {
   try {
     const r = await fetch("/auth/request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
     const j = await r.json();
-    if (j.link) {
-      // Testing fallback (RESEND_API_KEY not set on server)
-      msg.innerHTML = 'Email not yet wired on this deployment — <a href="' + escapeHtml(j.link) + '">click here to sign in</a> (would be emailed in production).';
-    } else if (r.ok) {
+    if (r.ok) {
       msg.textContent = j.note || "Check your email for the sign-in link.";
     } else {
       msg.textContent = j.error || "Something went wrong.";

@@ -131,7 +131,8 @@ async function authenticate(request, env) {
 //
 // Passwordless email login for the dashboard. Two secrets required:
 //   - MAGIC_LINK_SECRET  (HMAC signing key for tokens + session cookies)
-//   - RESEND_API_KEY     (optional — if unset, /auth/request returns the URL inline instead of emailing)
+//   - BREVO_API_KEY      (required to actually email — if unset, /auth/request accepts the request
+//                         and sends nothing. It never returns the link to the caller.)
 //
 // Tokens: "<payloadB64>.<sigB64>", where payload is JSON {u: user_id, e: expires_at_ms}
 // and sig is HMAC-SHA256(payload, secret). Constant-time compared on verify.
@@ -188,16 +189,16 @@ async function verifySessionToken(token, secret, maxAgeMs) {
 }
 
 async function sendMagicLinkEmail(env, to, link) {
-  if (!env.RESEND_API_KEY) return { ok: false, reason: "email_not_configured" };
-  const r = await fetch("https://api.resend.com/emails", {
+  if (!env.BREVO_API_KEY) return { ok: false, reason: "email_not_configured" };
+  const r = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
-    headers: { "Authorization": `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+    headers: { "api-key": env.BREVO_API_KEY, "Content-Type": "application/json", "Accept": "application/json" },
     body: JSON.stringify({
-      from: "Gnosem <hello@gnosem.dev>",
-      to: [to],
+      sender: { name: "Gnosem", email: "hello@gnosem.dev" },
+      to: [{ email: to }],
       subject: "Your Gnosem sign-in link",
-      text: `Click to sign in to your Gnosem dashboard:\n\n${link}\n\nThe link expires in 15 minutes. If you didn't request this, you can ignore this email.\n\n— Gnosem (a CUETV LLC product)`,
-      html: `<p>Click to sign in to your Gnosem dashboard:</p><p><a href="${link}">${link}</a></p><p>The link expires in 15 minutes. If you didn't request this, you can ignore this email.</p><p>— Gnosem (a CUETV LLC product)</p>`,
+      textContent: `Click to sign in to your Gnosem dashboard:\n\n${link}\n\nThe link expires in 15 minutes. If you didn't request this, you can ignore this email.\n\n— Gnosem (a CUETV LLC product)`,
+      htmlContent: `<p>Click to sign in to your Gnosem dashboard:</p><p><a href="${link}">${link}</a></p><p>The link expires in 15 minutes. If you didn't request this, you can ignore this email.</p><p>— Gnosem (a CUETV LLC product)</p>`,
     }),
   });
   if (!r.ok) return { ok: false, reason: "send_failed", status: r.status, body: await r.text() };
@@ -1175,12 +1176,17 @@ Sitemap: https://gnosem.dev/sitemap.xml
       const token = await issueMagicToken(user.id, env.MAGIC_LINK_SECRET);
       const link = `${url.origin}/auth/verify?token=${encodeURIComponent(token)}`;
       const send = await sendMagicLinkEmail(env, email, link);
-      if (!send.ok && send.reason === "email_not_configured") {
-        // Fallback for setup/testing before Resend is wired: return the link inline.
-        return json({ ok: true, note: "RESEND_API_KEY not set; returning link directly for testing (would email in prod)", link });
+      // The link is NEVER returned to the caller. It only ever reaches the inbox.
+      // Anything else hands a session to whoever knows a registered address.
+      if (!send.ok) {
+        console.error("magic-link send failed", JSON.stringify({ reason: send.reason, status: send.status, body: send.body }));
+        if (send.reason !== "email_not_configured") {
+          return json({ error: "failed to send email; try again later" }, 502);
+        }
       }
-      if (!send.ok) return json({ error: "failed to send email; try again later", detail: send }, 502);
-      return json({ ok: true, note: "check your email for a sign-in link (valid 15 min)" });
+      // Identical to the unregistered-email response above, so /auth/request cannot be
+      // used to enumerate which addresses have accounts.
+      return json({ ok: true, note: "if that email is registered, a link is on the way" });
     }
     if (url.pathname === "/auth/verify" && request.method === "GET") {
       if (!env.MAGIC_LINK_SECRET) return json({ error: "email login not configured on this deployment" }, 503);
