@@ -458,7 +458,11 @@ function upgradeHtml(ctx) {
   const planLabel = ctx.plan === "pro" ? "Pro (active)" : "Free";
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Upgrade to Gnosem Pro</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;max-width:640px;margin:40px auto;padding:0 20px;color:#0F172A;background:#F5F1EA}
+.mast{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:#0F172A}
+.mast img{width:32px;height:32px}
+.mast .n{font-family:Georgia,serif;font-size:18px;font-weight:600}
 h1{font-size:26px;margin:0 0 4px;font-family:Georgia,serif}
 .plan{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.12em;background:#0F172A;color:#F5F1EA;padding:3px 10px;border-radius:2px;margin-bottom:20px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:22px 0}
@@ -478,6 +482,7 @@ h1{font-size:26px;margin:0 0 4px;font-family:Georgia,serif}
 .free{padding:14px 18px;background:#fff;border-left:3px solid #B08D3E;font-size:14px;color:#555;margin-top:8px}
 .note{font-size:12.5px;color:#777;border-top:1px solid #ddd;margin-top:32px;padding-top:14px}
 </style></head><body>
+<a class="mast" href="/"><img src="/mark.svg" alt=""><span class="n">gnosem</span></a>
 <h1>Upgrade to Gnosem Pro</h1>
 <span class="plan">Current plan: ${planLabel}</span>
 <p>Unlimited cross-vendor memories across every model you use. Same MCP config, no data migration.</p>
@@ -570,11 +575,17 @@ async function handleUpgraded(request, env) {
     ? `<div style="background:#fff;border:1.5px solid #0F172A;border-radius:4px;padding:14px 18px;margin:16px 0"><strong>Your new API key</strong> (save this — it will not be shown again):<pre style="background:#0F172A;color:#F5F1EA;padding:10px 14px;border-radius:3px;margin-top:8px;font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;overflow-x:auto">${apiKey}</pre></div>`
     : `<p>Existing account upgraded. Your existing API key(s) now have Pro access.</p>`;
   return new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Welcome to Gnosem Pro</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>body{font:15px/1.6 -apple-system,BlinkMacSystemFont,Inter,sans-serif;max-width:640px;margin:40px auto;padding:0 20px;color:#0F172A;background:#F5F1EA}
+.mast{display:flex;align-items:center;gap:10px;margin-bottom:28px;text-decoration:none;color:#0F172A}
+.mast img{width:32px;height:32px}
+.mast .n{font-family:Georgia,serif;font-size:18px;font-weight:600}
 h1{font-family:Georgia,serif;font-size:28px;margin:0 0 8px}.tag{display:inline-block;background:#B08D3E;color:#0F172A;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:3px 10px;border-radius:2px;margin-bottom:16px}
 code{background:#eaeaea;padding:1px 5px;border-radius:2px;font-family:ui-monospace,SF Mono,Consolas,monospace}
 pre{background:#0F172A;color:#F5F1EA;padding:12px 14px;border-radius:3px;font-size:12.5px;overflow-x:auto}</style></head>
-<body><span class="tag">Payment received</span>
+<body>
+<a class="mast" href="/"><img src="/mark.svg" alt=""><span class="n">gnosem</span></a>
+<span class="tag">Payment received</span>
 <h1>Welcome to Gnosem Pro</h1>
 <p>Subscription active through ${new Date(periodEnd).toLocaleDateString()}.</p>
 ${keyLine}
@@ -678,10 +689,9 @@ code{background:#eaeaea;padding:1px 5px;border-radius:2px}
 .cta{display:inline-block;font-weight:700;font-size:14px;background:#0F172A;color:#F5F1EA;padding:10px 18px;border-radius:3px;text-decoration:none;margin-top:12px}
 a{color:#7a2e2e}a.cta{color:#F5F1EA}
 </style></head><body>
-<img src="/mark.svg" alt="" width="56" height="56" style="display:block;margin-bottom:12px">
-<span class="tag">Prototype · alpha</span>
-<h1>gnosem</h1>
-<p><strong>Cross-vendor AI memory over MCP.</strong> One memory, every model. Claude, GPT, Kimi, Gemini, Cursor, Windsurf — anything that speaks MCP or can call an HTTP tool.</p>
+<h1 style="margin:0 0 4px"><img src="/logo.svg" alt="Gnosem" width="280" style="display:block;max-width:100%;height:auto"></h1>
+<span class="tag" style="margin:16px 0 6px">Prototype · alpha</span>
+<p style="margin-top:14px"><strong>Cross-vendor AI memory over MCP.</strong> One memory, every model. Claude, GPT, Kimi, Gemini, Cursor, Windsurf — anything that speaks MCP or can call an HTTP tool.</p>
 <a class="cta" href="/upgrade">See pricing →</a> &nbsp; <a href="/blog/launching-gnosem" style="font-weight:600;font-size:14px">Read the launch story →</a>
 
 <h2>1. Sign up</h2>
