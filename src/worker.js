@@ -138,8 +138,9 @@ async function authenticate(request, env) {
     const row = await env.DB.prepare(
       `SELECT k.user_id, u.plan, u.subscription_status, u.subscription_period_end
        FROM api_keys k JOIN users u ON u.id = k.user_id
-       WHERE k.key_hash = ? AND k.revoked_at IS NULL`
-    ).bind(keyHash).first();
+       WHERE k.key_hash = ? AND k.revoked_at IS NULL
+         AND (k.expires_at IS NULL OR k.expires_at > ?)`
+    ).bind(keyHash, Date.now()).first();
     if (!row) return null;
     env.DB.prepare("UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?")
       .bind(Date.now(), keyHash).run().catch(() => {});
@@ -1037,7 +1038,14 @@ async function handleMcp(request, env, ctx) {
       return json(jsonRpc(id, {}));
     }
     if (method === "tools/call") {
-      if (!ctx) return json(jsonRpcError(id, -32001, "Authentication required: tools/call needs a Bearer token. Sign up at https://gnosem.dev to get a key."));
+      if (!ctx) {
+        // HTTP 401 + WWW-Authenticate triggers the MCP client OAuth flow (RFC 9728 discovery).
+        return json(
+          jsonRpcError(id, -32001, "Authentication required. Connect via OAuth, or send Authorization: Bearer gn_<key>. Sign up at https://gnosem.dev."),
+          401,
+          { "WWW-Authenticate": 'Bearer resource_metadata="https://gnosem.dev/.well-known/oauth-protected-resource"' }
+        );
+      }
       const name = params?.name;
       const fn = TOOL_DISPATCH[name];
       if (!fn) return json(jsonRpcError(id, -32601, `Unknown tool: ${name}`));
@@ -1515,6 +1523,8 @@ ${LOCKUP_SVG.replace('<svg ', '<svg class="lockup" ')}
 </body></html>`;
 }
 
+import { handleOAuth } from "./oauth.js";
+
 // ------------- router -------------
 
 export default {
@@ -1533,6 +1543,11 @@ async function route(request, env) {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS });
     }
+
+    // OAuth 2.1 authorization server for MCP clients (DCR + PKCE). Owns /oauth/* and
+    // the two /.well-known OAuth discovery documents; returns null for everything else.
+    const oauthResp = await handleOAuth(request, env, url, { verifySessionToken });
+    if (oauthResp) return oauthResp;
 
     // Enforce max-body-size for POST endpoints BEFORE any parsing / expensive work.
     // Content-Length is set by every legitimate HTTP client; missing = suspicious, reject.
