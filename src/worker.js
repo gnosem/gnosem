@@ -881,14 +881,24 @@ async function toolMemorySupersede(env, ctx, args) {
     "SELECT id FROM memories WHERE id = ? AND user_id = ? AND forgotten_at IS NULL AND superseded_by IS NULL"
   ).bind(oldId, userId).first();
   if (!old) throw new Error("no such active memory to supersede");
+  // force: true is REQUIRED here. A correction is by definition semantically similar
+  // to the memory it corrects, so semantic dedup would "match" the old row and return
+  // its id — and the UPDATE below would then mark the row as superseding ITSELF,
+  // silently destroying it. (Found via dogfooding, 2026-08-25.)
   const written = await toolMemoryWrite(env, ctx, {
     content: newContent,
     tags: args?.tags,
     written_by: args?.written_by,
     session_id: args?.session_id,
+    force: true,
   });
+  // Belt and suspenders: never allow a row to supersede itself.
+  if (written.id === oldId) throw new Error("supersede produced the same row id; aborting to avoid self-supersede");
   await env.DB.prepare("UPDATE memories SET superseded_by = ? WHERE id = ?")
     .bind(written.id, oldId).run();
+  // Remove the superseded row's vector so it can never crowd out live results
+  // (superseded rows are filtered post-retrieval, which silently shrinks k).
+  await env.VECTORIZE.deleteByIds([oldId]).catch(() => {});
   return { old_id: oldId, new_id: written.id, created_at: written.created_at };
 }
 
