@@ -150,6 +150,12 @@ pre{font-family:ui-monospace,SF Mono,Consolas,monospace;font-size:13px;backgroun
     <p style="margin-top:12px"><button class="btn" id="export-btn">Download JSON export</button></p>
   </div>
 
+  <h2>Connected apps</h2>
+  <div class="card">
+    <p class="small">Apps holding live OAuth tokens for this account (e.g. Claude). Revoking disconnects the app until you approve it again.</p>
+    <div id="apps-list" class="small">Loading&hellip;</div>
+  </div>
+
   <h2>API key</h2>
   <div class="card">
     <p class="small">Rotate to get a new key. All current keys will be revoked — update every MCP client that uses this account before signing out.</p>
@@ -246,6 +252,32 @@ async function forgetMemory(id) {
   loadMemories(); loadAccount();
 }
 
+async function loadApps() {
+  const el = $("apps-list");
+  if (!el) return;
+  try {
+    const r = await authedFetch("/keys/list");
+    const j = await r.json();
+    const keys = j.keys || [];
+    if (!keys.length) { el.textContent = "No live credentials."; return; }
+    const fmt = (t) => t ? new Date(t).toLocaleString() : "\u2014";
+    el.innerHTML = "<table style=\"width:100%;border-collapse:collapse\">" +
+      "<tr><th align=left>App</th><th align=left>Type</th><th align=left>Last used</th><th align=left>Expires</th><th></th></tr>" +
+      keys.map(k =>
+        "<tr><td>" + escapeHtml(k.label || k.id) + "</td><td>" + escapeHtml(k.kind) + "</td><td>" + fmt(k.last_used_at) + "</td><td>" + fmt(k.expires_at) +
+        "</td><td>" + (k.kind === "oauth" ? "<button class=\"btn danger\" data-revoke=\"" + k.id + "\">Revoke</button>" : "") + "</td></tr>"
+      ).join("") + "</table>";
+    el.querySelectorAll("[data-revoke]").forEach(b => b.addEventListener("click", () => revokeApp(b.dataset.revoke)));
+  } catch { el.textContent = "Could not load connected apps."; }
+}
+
+async function revokeApp(id) {
+  if (!confirm("Revoke this app's access? It will stop working until you approve it again.")) return;
+  await authedFetch("/keys/revoke", { method: "POST", body: JSON.stringify({ id }) });
+  showToast("Access revoked");
+  loadApps();
+}
+
 async function rotateKey() {
   if (!confirm("Rotate your API key? Every MCP client currently connected will stop working until you update it with the new key.")) return;
   const r = await authedFetch("/keys/rotate", { method: "POST" });
@@ -325,6 +357,7 @@ async function addMemory() {
       list.querySelectorAll("[data-forget]").forEach(b => b.addEventListener("click", () => forgetMemory(b.dataset.forget)));
     }
     loadAccount();
+    loadApps();
   } catch (e) {
     errEl.textContent = e.message || "Save failed";
     show(errEl);

@@ -83,6 +83,11 @@ const MAX_BODY_BYTES = {
   "/demo/search": 4 * 1024,
   "/api/stripe/webhook": 64 * 1024,
   "/keys/rotate": 1 * 1024,
+  "/keys/revoke": 1 * 1024,
+  "/oauth/register": 8 * 1024,
+  "/oauth/authorize": 8 * 1024,
+  "/oauth/token": 8 * 1024,
+  "/oauth/revoke": 4 * 1024,
 };
 
 // ------------- helpers -------------
@@ -1528,6 +1533,17 @@ import { handleOAuth } from "./oauth.js";
 // ------------- router -------------
 
 export default {
+  // Nightly sweep of expired OAuth artifacts + stale rate-limit windows.
+  async scheduled(event, env, ctx) {
+    const now = Date.now();
+    const grace = 7 * 24 * 3600 * 1000;
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM oauth_codes WHERE expires_at < ?").bind(now),
+      env.DB.prepare("DELETE FROM api_keys WHERE kind = 'oauth' AND ((expires_at IS NOT NULL AND expires_at < ?) OR (revoked_at IS NOT NULL AND revoked_at < ?))").bind(now - grace, now - grace),
+      env.DB.prepare("DELETE FROM oauth_refresh_tokens WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)").bind(now, now - 30 * 24 * 3600 * 1000),
+      env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(now - 24 * 3600 * 1000),
+    ]);
+  },
   async fetch(request, env) {
     const response = await route(request, env);
     // Apply security headers to every response. Set (not append) so a route can override
@@ -1544,11 +1560,6 @@ async function route(request, env) {
       return new Response(null, { status: 204, headers: CORS });
     }
 
-    // OAuth 2.1 authorization server for MCP clients (DCR + PKCE). Owns /oauth/* and
-    // the two /.well-known OAuth discovery documents; returns null for everything else.
-    const oauthResp = await handleOAuth(request, env, url, { verifySessionToken });
-    if (oauthResp) return oauthResp;
-
     // Enforce max-body-size for POST endpoints BEFORE any parsing / expensive work.
     // Content-Length is set by every legitimate HTTP client; missing = suspicious, reject.
     if (request.method === "POST" && MAX_BODY_BYTES[url.pathname] !== undefined) {
@@ -1557,6 +1568,18 @@ async function route(request, env) {
       if (!Number.isFinite(contentLength)) return json({ error: "Content-Length header required" }, 411);
       if (contentLength > max) return json({ error: `request body too large (${contentLength} bytes; max ${max})` }, 413);
     }
+
+    // OAuth 2.1 authorization server for MCP clients (DCR + PKCE). Owns /oauth/* and the
+    // two /.well-known OAuth discovery documents; returns null for everything else.
+    // Rate-limited by IP across all /oauth/* endpoints: 30 per 15 min (a full legit
+    // flow is ~5 requests). Discovery docs are outside the limit (static + cacheable).
+    if (url.pathname.startsWith("/oauth/")) {
+      const ip = request.headers.get("cf-connecting-ip") || "unknown";
+      const rl = await checkRateLimit(env, "oauth:" + ip, 30, 900 * 1000);
+      if (!rl.allowed) return json({ error: "rate_limited", error_description: "too many OAuth requests; retry in ~" + Math.ceil(rl.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rl.retryAfter) });
+    }
+    const oauthResp = await handleOAuth(request, env, url, { verifySessionToken });
+    if (oauthResp) return oauthResp;
 
     // Landing page — short cache so branding/copy updates propagate within ~5 min.
     if (url.pathname === "/" && (request.method === "GET" || request.method === "HEAD")) {
@@ -1723,6 +1746,10 @@ Sitemap: https://gnosem.dev/sitemap.xml
 
     // Public read-only demo store. Endpoints hard-code the demo user_id server-side.
     if (url.pathname === "/demo/search" && request.method === "POST") {
+      // Unauthenticated + spends Workers AI neurons per call — rate-limit by IP.
+      const ip = request.headers.get("cf-connecting-ip") || "unknown";
+      const rl = await checkRateLimit(env, "demo:" + ip, 30, 900 * 1000);
+      if (!rl.allowed) return json({ error: "rate limited; retry in ~" + Math.ceil(rl.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rl.retryAfter) });
       return handleDemoSearch(request, env);
     }
     if (url.pathname === "/demo/list" && (request.method === "GET" || request.method === "HEAD")) {
@@ -1809,6 +1836,38 @@ Sitemap: https://gnosem.dev/sitemap.xml
 
     if (url.pathname === "/keys/rotate" && request.method === "POST") {
       return handleKeyRotate(request, env, ctx.user_id);
+    }
+    // List live credentials: the API key plus any OAuth client tokens (kind='oauth').
+    // Exposes a 12-hex prefix of the hash as an opaque id — never the full hash.
+    if (url.pathname === "/keys/list" && request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        "SELECT substr(key_hash, 1, 12) AS id, label, kind, created_at, last_used_at, expires_at FROM api_keys WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC"
+      ).bind(ctx.user_id).all();
+      return json({ keys: results || [] });
+    }
+    // Revoke one credential by id. For OAuth tokens, also revokes the matching client's
+    // refresh tokens for this user — otherwise the client re-mints access on next refresh.
+    if (url.pathname === "/keys/revoke" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { body = {}; }
+      const id = String(body.id || "");
+      if (!/^[a-f0-9]{12}$/.test(id)) return json({ error: "id must be the 12-char key id from /keys/list" }, 400);
+      const row = await env.DB.prepare(
+        "SELECT key_hash, label, kind FROM api_keys WHERE user_id = ? AND revoked_at IS NULL AND substr(key_hash, 1, 12) = ?"
+      ).bind(ctx.user_id, id).first();
+      if (!row) return json({ error: "no live credential with that id" }, 404);
+      const now = Date.now();
+      const stmts = [
+        env.DB.prepare("UPDATE api_keys SET revoked_at = ? WHERE key_hash = ?").bind(now, row.key_hash),
+      ];
+      if (row.kind === "oauth") {
+        stmts.push(env.DB.prepare(
+          `UPDATE oauth_refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL AND client_id IN
+             (SELECT client_id FROM oauth_clients WHERE ('oauth:' || COALESCE(client_name, client_id)) = ?)`
+        ).bind(now, ctx.user_id, row.label));
+      }
+      await env.DB.batch(stmts);
+      return json({ revoked: true, id, kind: row.kind });
     }
 
     // /me — dashboard-facing account summary. Requires auth. Returns email/plan/memory_count/memory_limit.

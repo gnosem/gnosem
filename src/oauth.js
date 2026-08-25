@@ -157,7 +157,8 @@ export async function handleOAuth(request, env, url, deps = {}) {
     path === "/.well-known/oauth-protected-resource" ||
     path === "/oauth/register" ||
     path === "/oauth/authorize" ||
-    path === "/oauth/token";
+    path === "/oauth/token" ||
+    path === "/oauth/revoke";
   if (!owned) return null;
 
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -176,6 +177,7 @@ export async function handleOAuth(request, env, url, deps = {}) {
       authorization_endpoint: issuer + "/oauth/authorize",
       token_endpoint: issuer + "/oauth/token",
       registration_endpoint: issuer + "/oauth/register",
+      revocation_endpoint: issuer + "/oauth/revoke",
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
@@ -268,6 +270,26 @@ export async function handleOAuth(request, env, url, deps = {}) {
     r.searchParams.set("code", code);
     if (p.state) r.searchParams.set("state", p.state);
     return new Response(null, { status: 302, headers: { Location: r.toString(), "Cache-Control": "no-store" } });
+  }
+
+  // RFC 7009 token revocation. Always 200 for well-formed requests, whether or not
+  // the token existed — revocation must not be an oracle for token validity.
+  if (path === "/oauth/revoke" && request.method === "POST") {
+    let p2;
+    const ct2 = request.headers.get("Content-Type") || "";
+    if (ct2.includes("json")) { try { p2 = await request.json(); } catch { p2 = {}; } }
+    else p2 = Object.fromEntries((await request.formData()).entries());
+    const token = String(p2.token || "");
+    if (token) {
+      const h = await sha256Hex(token);
+      const now = Date.now();
+      if (token.startsWith("rt_")) {
+        await env.DB.prepare("UPDATE oauth_refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL").bind(now, h).run();
+      } else {
+        await env.DB.prepare("UPDATE api_keys SET revoked_at = ? WHERE key_hash = ? AND kind = 'oauth' AND revoked_at IS NULL").bind(now, h).run();
+      }
+    }
+    return new Response(null, { status: 200, headers: CORS });
   }
 
   if (path === "/oauth/token" && request.method === "POST") {
