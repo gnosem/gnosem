@@ -224,7 +224,7 @@ export async function handleOAuth(request, env, url, deps = {}) {
       const r = new URL(p.redirect_uri);
       r.searchParams.set("error", error);
       if (p.state) r.searchParams.set("state", p.state);
-      return Response.redirect(r.toString(), 302);
+      return new Response(null, { status: 302, headers: { Location: r.toString(), "Cache-Control": "no-store" } });
     };
     if (p.response_type !== "code") return redirectErr("unsupported_response_type");
     if (!p.code_challenge || (p.code_challenge_method || "S256") !== "S256") return redirectErr("invalid_request");
@@ -267,7 +267,7 @@ export async function handleOAuth(request, env, url, deps = {}) {
     const r = new URL(p.redirect_uri);
     r.searchParams.set("code", code);
     if (p.state) r.searchParams.set("state", p.state);
-    return Response.redirect(r.toString(), 302);
+    return new Response(null, { status: 302, headers: { Location: r.toString(), "Cache-Control": "no-store" } });
   }
 
   if (path === "/oauth/token" && request.method === "POST") {
