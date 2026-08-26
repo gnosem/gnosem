@@ -1559,6 +1559,9 @@ export default {
     // Apply security headers to every response. Set (not append) so a route can override
     // if it genuinely needs to — but nothing in the codebase should need to right now.
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) response.headers.set(k, v);
+    // CSP on HTML pages only (added 2026-08-26 security review) — JSON/MCP/API responses skip it.
+    const __ct_csp = response.headers.get("Content-Type") || "";
+    if (__ct_csp.startsWith("text/html")) response.headers.set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
     return response;
   },
 };

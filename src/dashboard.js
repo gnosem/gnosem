@@ -261,11 +261,11 @@ async function loadApps() {
     const keys = j.keys || [];
     if (!keys.length) { el.textContent = "No live credentials."; return; }
     const fmt = (t) => t ? new Date(t).toLocaleString() : "\u2014";
-    el.innerHTML = "<table style=\"width:100%;border-collapse:collapse\">" +
+    el.innerHTML = "<table style='width:100%;border-collapse:collapse'>" +
       "<tr><th align=left>App</th><th align=left>Type</th><th align=left>Last used</th><th align=left>Expires</th><th></th></tr>" +
       keys.map(k =>
         "<tr><td>" + escapeHtml(k.label || k.id) + "</td><td>" + escapeHtml(k.kind) + "</td><td>" + fmt(k.last_used_at) + "</td><td>" + fmt(k.expires_at) +
-        "</td><td>" + (k.kind === "oauth" ? "<button class=\"btn danger\" data-revoke=\"" + k.id + "\">Revoke</button>" : "") + "</td></tr>"
+        "</td><td>" + (k.kind === "oauth" ? "<button class='btn danger' data-revoke='" + k.id + "'>Revoke</button>" : "") + "</td></tr>"
       ).join("") + "</table>";
     el.querySelectorAll("[data-revoke]").forEach(b => b.addEventListener("click", () => revokeApp(b.dataset.revoke)));
   } catch { el.textContent = "Could not load connected apps."; }
