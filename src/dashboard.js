@@ -181,8 +181,11 @@ const hide = (el) => el.classList.add("hidden");
 const fmtDate = (ms) => new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 function getKey() {
+  // The key is handed off in the URL fragment (never sent to the server, never in Referer or access logs).
+  // The legacy ?key= query form is still accepted for old links, then scrubbed.
   const params = new URLSearchParams(location.search);
-  const fromUrl = params.get("key");
+  const hashParams = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  const fromUrl = hashParams.get("key") || params.get("key");
   if (fromUrl && /^gn_[a-f0-9]{32}$/i.test(fromUrl)) {
     localStorage.setItem(KEY_LS, fromUrl);
     params.delete("key");

@@ -1278,7 +1278,7 @@ ${keyLine}
     }
   }
 }</pre>
-<p style="margin-top:22px">${apiKey ? `<a class="btn" style="display:inline-block;background:#15140F;color:#FAF9F7;padding:11px 20px;border-radius:3px;text-decoration:none;font-weight:700;font-size:14px" href="/dashboard?key=${apiKey}">Open your dashboard →</a>` : `<a class="btn" style="display:inline-block;background:#15140F;color:#FAF9F7;padding:11px 20px;border-radius:3px;text-decoration:none;font-weight:700;font-size:14px" href="/dashboard">Open your dashboard →</a>`}</p>
+<p style="margin-top:22px">${apiKey ? `<a class="btn" style="display:inline-block;background:#15140F;color:#FAF9F7;padding:11px 20px;border-radius:3px;text-decoration:none;font-weight:700;font-size:14px" href="/dashboard#key=${apiKey}">Open your dashboard →</a>` : `<a class="btn" style="display:inline-block;background:#15140F;color:#FAF9F7;padding:11px 20px;border-radius:3px;text-decoration:none;font-weight:700;font-size:14px" href="/dashboard">Open your dashboard →</a>`}</p>
 <p style="margin-top:24px;font-size:13px;color:#777">Manage billing / cancel any time via the receipt-email link. Questions: reply to any Stripe receipt.</p>
 </body></html>`, { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } });
 }
@@ -1288,21 +1288,23 @@ async function verifyStripeSignature(rawBody, signatureHeader, secret) {
   if (!signatureHeader) return false;
   const parts = Object.fromEntries(signatureHeader.split(",").map(kv => kv.split("=")));
   if (!parts.t || !parts.v1) return false;
+  // Reject signatures whose timestamp is outside a 5-minute window (replay protection, same tolerance Stripe's SDKs use).
+  const ts = Number(parts.t) * 1000;
+  if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 5 * 60 * 1000) return false;
   const signedPayload = `${parts.t}.${rawBody}`;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signedPayload));
   const expected = Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
-  // Constant-time compare would be nicer, but not vital for a webhook signature.
-  return expected === parts.v1;
+  return ctEq(expected, String(parts.v1));
 }
 
 async function handleStripeWebhook(request, env) {
   const rawBody = await request.text();
   const sig = request.headers.get("stripe-signature");
-  if (env.STRIPE_WEBHOOK_SECRET) {
-    const ok = await verifyStripeSignature(rawBody, sig, env.STRIPE_WEBHOOK_SECRET);
-    if (!ok) return new Response("bad signature", { status: 400, headers: CORS });
-  }
+  // Fail closed: without a configured webhook secret, never process unverified events.
+  if (!env.STRIPE_WEBHOOK_SECRET) return new Response("webhook not configured", { status: 503, headers: CORS });
+  const ok = await verifyStripeSignature(rawBody, sig, env.STRIPE_WEBHOOK_SECRET);
+  if (!ok) return new Response("bad signature", { status: 400, headers: CORS });
   let event;
   try { event = JSON.parse(rawBody); } catch { return new Response("bad json", { status: 400, headers: CORS }); }
   const type = event.type;
@@ -1766,6 +1768,9 @@ Sitemap: https://gnosem.dev/sitemap.xml
       return handleDemoSearch(request, env);
     }
     if (url.pathname === "/demo/list" && (request.method === "GET" || request.method === "HEAD")) {
+      const ipList = request.headers.get("cf-connecting-ip") || "unknown";
+      const rlList = await checkRateLimit(env, "demolist:" + ipList, 60, 900 * 1000);
+      if (!rlList.allowed) return json({ error: "rate limited; retry in ~" + Math.ceil(rlList.retryAfter / 60) + " min" }, 429, { "Retry-After": String(rlList.retryAfter) });
       return handleDemoList(env);
     }
 
